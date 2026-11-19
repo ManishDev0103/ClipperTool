@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+data/
+cookies/*.txt
+!cookies/.gitkeep

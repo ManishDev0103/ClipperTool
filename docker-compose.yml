@@ -1,0 +1,92 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATA_DIR: /data
+      RUN_WORKER: "false"
+      YT_DLP_COOKIES_FILE: ${YT_DLP_COOKIES_FILE:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+    volumes:
+      - "${CLIPPER_DATA_DIR:-C:/1Clipping/data}:/data"
+      - "${YT_DLP_COOKIES_DIR:-./cookies}:/cookies:ro"
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.services.worker"]
+    environment:
+      DATA_DIR: /data
+      RUN_WORKER: "false"
+      YT_DLP_COOKIES_FILE: ${YT_DLP_COOKIES_FILE:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+    volumes:
+      - "${CLIPPER_DATA_DIR:-C:/1Clipping/data}:/data"
+      - "${YT_DLP_COOKIES_DIR:-./cookies}:/cookies:ro"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  worker-gpu:
+    profiles: ["gpu"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.gpu
+    environment:
+      DATA_DIR: /data
+      RUN_WORKER: "false"
+      YT_DLP_COOKIES_FILE: ${YT_DLP_COOKIES_FILE:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+    volumes:
+      - "${CLIPPER_DATA_DIR:-C:/1Clipping/data}:/data"
+      - "${YT_DLP_COOKIES_DIR:-./cookies}:/cookies:ro"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+
+volumes:
+  ollama_data:
