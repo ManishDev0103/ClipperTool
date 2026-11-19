@@ -134,6 +134,47 @@ def initialize_db() -> None:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS layout_presets (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                aspect_ratio TEXT NOT NULL,
+                facecam_region TEXT NOT NULL,
+                gameplay_region TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE(project_id, name)
+            );
+            CREATE TABLE IF NOT EXISTS live_recordings (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                source_url TEXT NOT NULL,
+                status TEXT NOT NULL,
+                buffer_seconds INTEGER NOT NULL,
+                disk_cap_bytes INTEGER NOT NULL,
+                segment_dir TEXT NOT NULL,
+                audio_trigger_enabled INTEGER NOT NULL DEFAULT 0,
+                audio_peak_dbfs REAL NOT NULL DEFAULT -10,
+                chat_trigger_enabled INTEGER NOT NULL DEFAULT 0,
+                chat_messages_per_minute INTEGER NOT NULL DEFAULT 30,
+                reconnect_count INTEGER NOT NULL DEFAULT 0,
+                buffer_size_bytes INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                ended_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS live_recordings_status_idx
+                ON live_recordings(status, started_at);
+            CREATE TABLE IF NOT EXISTS live_candidates (
+                id TEXT PRIMARY KEY,
+                recording_id TEXT NOT NULL REFERENCES live_recordings(id) ON DELETE CASCADE,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                trigger_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                reason TEXT NOT NULL,
+                video_id TEXT REFERENCES videos(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS live_candidates_project_idx
+                ON live_candidates(project_id, created_at DESC);
             """
         )
 

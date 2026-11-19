@@ -20,6 +20,20 @@ class DownloadCreate(BaseModel):
     quality: Literal["best", "1080p", "720p", "480p"] = "best"
 
 
+class LiveRecordingCreate(BaseModel):
+    url: HttpUrl
+    buffer_minutes: int = Field(default=30, ge=1, le=240)
+    disk_cap_gb: float = Field(default=20, gt=0, le=500)
+    audio_trigger_enabled: bool = False
+    audio_peak_dbfs: float = Field(default=-10, ge=-60, le=0)
+    chat_trigger_enabled: bool = False
+    chat_messages_per_minute: int = Field(default=30, ge=1, le=10000)
+
+
+class LiveClipCreate(BaseModel):
+    seconds: int = Field(default=60, ge=1, le=600)
+
+
 class UploadCreate(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     size: int = Field(gt=0)
@@ -29,6 +43,42 @@ class ClipCreate(BaseModel):
     start_time: float = Field(ge=0)
     end_time: float = Field(gt=0)
     mode: Literal["copy", "accurate"] = "accurate"
+
+
+class ClipRange(BaseModel):
+    start_time: float = Field(ge=0)
+    end_time: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "ClipRange":
+        if self.end_time <= self.start_time:
+            raise ValueError("End time must be greater than start time.")
+        return self
+
+
+class ClipBatchCreate(BaseModel):
+    segments: list[ClipRange] = Field(min_length=1, max_length=30)
+    mode: Literal["copy", "accurate"] = "accurate"
+
+    @model_validator(mode="after")
+    def validate_segments(self) -> "ClipBatchCreate":
+        ordered = sorted(self.segments, key=lambda segment: segment.start_time)
+        if any(current.start_time < previous.end_time for previous, current in zip(ordered, ordered[1:])):
+            raise ValueError("Timeline segments cannot overlap.")
+        return self
+
+
+class VideoRegion(BaseModel):
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "VideoRegion":
+        if self.x + self.width > 1.000001 or self.y + self.height > 1.000001:
+            raise ValueError("Selected video regions must stay inside the source frame.")
+        return self
 
 
 class TranscriptionCreate(BaseModel):
@@ -64,15 +114,57 @@ class ExportCreate(BaseModel):
     position: Literal["top", "middle", "bottom"] = "bottom"
     bitrate: Literal["4M", "8M", "12M", "20M"] = "8M"
     fps: Literal[30, 60] = 30
-    width: Literal[1080, 720] = 1080
-    height: Literal[1920, 1280, 1080] = 1920
+    width: Literal[720, 1080, 1920] = 1080
+    height: Literal[1080, 1280, 1350, 1920] = 1920
     font_file: str | None = Field(default=None, max_length=255)
+    aspect_ratio: Literal["9:16", "1:1", "4:5", "16:9"] | None = None
+    smart_reframe: bool = False
+    background_fill: Literal["blur", "crop", "pad"] = "blur"
+    layout: Literal["single", "gaming_split"] = "single"
+    facecam_region: VideoRegion | None = None
+    gameplay_region: VideoRegion | None = None
 
     @model_validator(mode="after")
     def validate_dimensions(self) -> "ExportCreate":
-        if (self.width, self.height) not in {(1080, 1920), (720, 1280), (1080, 1080)}:
-            raise ValueError("Choose 1080x1920, 720x1280, or 1080x1080 output.")
+        dimensions = {
+            "9:16": (1080, 1920),
+            "1:1": (1080, 1080),
+            "4:5": (1080, 1350),
+            "16:9": (1920, 1080),
+        }
+        if self.aspect_ratio is None:
+            legacy_dimensions = {
+                (1080, 1920): "9:16",
+                (720, 1280): "9:16",
+                (1080, 1080): "1:1",
+                (1080, 1350): "4:5",
+                (1920, 1080): "16:9",
+            }
+            self.aspect_ratio = legacy_dimensions.get((self.width, self.height))
+            if self.aspect_ratio is None:
+                raise ValueError("Choose 9:16, 1:1, 4:5, or 16:9 output.")
+        else:
+            self.width, self.height = dimensions[self.aspect_ratio]
+        if self.layout == "gaming_split" and (
+            self.facecam_region is None or self.gameplay_region is None
+        ):
+            raise ValueError("Select both the facecam and gameplay regions for a split-screen export.")
         return self
+
+
+class LayoutPresetCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    aspect_ratio: Literal["9:16", "1:1", "4:5", "16:9"] = "9:16"
+    facecam_region: VideoRegion
+    gameplay_region: VideoRegion
+
+    @field_validator("name")
+    @classmethod
+    def trim_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Preset name cannot be blank.")
+        return value
 
 
 class HighlightWeights(BaseModel):

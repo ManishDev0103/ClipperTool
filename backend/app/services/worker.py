@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -17,7 +18,10 @@ from app.services.exporting import export_captioned_clip
 from app.services.highlight_analysis import analyze_video_highlights, create_thumbnail
 from app.services.ollama import generate_clip_metadata
 from app.services.media import probe_media
+from app.services.reframing import detect_face_track
 from app.services.transcription import transcribe_video
+from app.services.live_buffer import cut_last_n, list_buffer_segments
+from app.services.live_recording import reconcile_live_recordings
 
 LOGGER = logging.getLogger("clipper.worker")
 TERMINAL_STATUSES = {"completed", "failed"}
@@ -210,7 +214,7 @@ def _process_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
     with connect() as connection:
         clip = connection.execute(
             """
-            SELECT c.*, v.id AS source_video_id
+            SELECT c.*, v.id AS source_video_id, v.width AS source_width, v.height AS source_height
             FROM clips c JOIN videos v ON v.id = c.video_id
             WHERE c.id = ? AND c.project_id = ?
             """,
@@ -264,6 +268,18 @@ def _process_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
     def progress(percent: float, message: str) -> None:
         update_job(job["id"], progress=percent, message=message)
 
+    face_track: list[dict[str, float]] | None = None
+    source_dimensions: tuple[int, int] | None = None
+    if settings.get("smart_reframe") and settings.get("layout") != "gaming_split":
+        face_track = detect_face_track(Path(clip["file_path"]), duration)
+        source_width, source_height = clip["source_width"], clip["source_height"]
+        if not source_width or not source_height:
+            metadata = probe_media(Path(clip["file_path"]))
+            source_width, source_height = metadata["width"], metadata["height"]
+        if not source_width or not source_height:
+            raise RuntimeError("Could not read the source dimensions needed for smart reframe.")
+        source_dimensions = (int(source_width), int(source_height))
+
     output_path, used_nvenc = export_captioned_clip(
         Path(clip["file_path"]),
         words,
@@ -272,6 +288,8 @@ def _process_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
         font_path,
         duration,
         progress,
+        face_track,
+        source_dimensions,
     )
     settings["encoder"] = "h264_nvenc" if used_nvenc else "libx264"
     with connect() as connection:
@@ -376,11 +394,64 @@ def _process_highlights(job: dict[str, Any], payload: dict[str, Any]) -> None:
     update_job(job["id"], progress=100, message=f"Found {len(suggestions)} highlight suggestions")
 
 
+def _process_live_clip(job: dict[str, Any], payload: dict[str, Any]) -> None:
+    with connect() as connection:
+        recording = connection.execute(
+            "SELECT * FROM live_recordings WHERE id = ? AND project_id = ?",
+            (payload["recording_id"], job["project_id"]),
+        ).fetchone()
+    if recording is None:
+        raise RuntimeError("The live recording no longer exists in this project.")
+
+    video_id = str(uuid4())
+    output_path = DATA_DIR / "videos" / job["project_id"] / "live-clips" / f"{video_id}.mp4"
+    update_job(job["id"], progress=5, message="Selecting recent stream segments")
+    candidate_at = payload.get("candidate_at")
+    end_before = (
+        datetime.fromisoformat(candidate_at.replace("Z", "+00:00")).timestamp()
+        if candidate_at
+        else None
+    )
+    cut_last_n(
+        list_buffer_segments(Path(recording["segment_dir"])),
+        int(payload["seconds"]),
+        output_path,
+        end_before=end_before,
+    )
+    update_job(job["id"], progress=85, message="Reading live clip metadata")
+    metadata = probe_media(output_path)
+    title = f"Live clip · {int(payload['seconds'])} seconds"
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO videos (id, project_id, title, source_url, file_path, duration, width, height, fps)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                video_id,
+                job["project_id"],
+                title,
+                recording["source_url"],
+                str(output_path),
+                metadata["duration"],
+                metadata["width"],
+                metadata["height"],
+                metadata["fps"],
+            ),
+        )
+        if payload.get("candidate_id"):
+            connection.execute(
+                "UPDATE live_candidates SET video_id = ? WHERE id = ?",
+                (video_id, payload["candidate_id"]),
+            )
+    update_job(job["id"], progress=100, message=f"Ready to edit: {title}")
+
+
 def process_next_job() -> bool:
     with connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
-            "SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at, id LIMIT 1"
+            "SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at, rowid LIMIT 1"
         ).fetchone()
         if row is None:
             connection.commit()
@@ -411,6 +482,8 @@ def process_next_job() -> bool:
             _process_export(job, payload)
         elif job["kind"] == "highlight_analysis":
             _process_highlights(job, payload)
+        elif job["kind"] == "live_clip":
+            _process_live_clip(job, payload)
         else:
             raise RuntimeError(f"Unsupported job type: {job['kind']}")
         update_job(job["id"], status="completed", progress=100, message="Complete", error=None)
@@ -436,6 +509,7 @@ def run_worker(stop_event: threading.Event | None = None) -> None:
     LOGGER.info("Clipper background worker started")
     while stop_event is None or not stop_event.is_set():
         try:
+            reconcile_live_recordings()
             if not process_next_job():
                 time.sleep(0.5)
         except sqlite3.Error:

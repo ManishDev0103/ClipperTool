@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import RUN_WORKER
 from app.db import initialize_db
-from app.routes import clips, downloads, exports, highlights, jobs, projects, settings, transcriptions, uploads, videos
+from app.routes import clips, downloads, editor, exports, highlights, jobs, live, projects, settings, transcriptions, uploads, videos
 from app.services.worker import start_worker_thread
 
 logging.basicConfig(level=logging.INFO)
@@ -33,10 +33,12 @@ for route_module in (
     downloads,
     uploads,
     videos,
+    editor,
     clips,
     transcriptions,
     exports,
     highlights,
+    live,
     jobs,
     settings,
 ):

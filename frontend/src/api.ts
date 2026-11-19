@@ -71,6 +71,21 @@ export type HighlightAnalysis = {
   suggestions: HighlightSuggestion[];
 };
 
+export type VideoRegion = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type LayoutPreset = {
+  id: string;
+  name: string;
+  aspect_ratio: "9:16" | "1:1" | "4:5" | "16:9";
+  facecam_region: VideoRegion;
+  gameplay_region: VideoRegion;
+};
+
 export type ProjectDetail = {
   project: { id: string; name: string };
   videos: Video[];
@@ -80,12 +95,38 @@ export type ProjectDetail = {
 
 export type Job = {
   id: string;
-  kind: "download" | "clip" | "transcription" | "export" | "highlight_analysis";
+  kind: "download" | "clip" | "transcription" | "export" | "highlight_analysis" | "live_clip";
   model?: string;
   status: "queued" | "running" | "completed" | "failed";
   progress: number;
   message: string;
   error: string | null;
+};
+
+export type LiveRecording = {
+  id: string;
+  project_id: string;
+  source_url: string;
+  status: "starting" | "recording" | "reconnecting" | "stopping" | "stopped" | "ended" | "failed";
+  buffer_seconds: number;
+  buffered_seconds: number;
+  buffer_size_bytes: number;
+  disk_cap_bytes: number;
+  reconnect_count: number;
+  last_error: string | null;
+  audio_trigger_enabled: boolean;
+  chat_trigger_enabled: boolean;
+  started_at: string;
+  ended_at: string | null;
+};
+
+export type LiveCandidate = {
+  id: string;
+  recording_id: string;
+  trigger_at: string;
+  reason: string;
+  video_id: string | null;
+  created_at: string;
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -106,6 +147,7 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     }
     throw new Error(detail);
   }
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 

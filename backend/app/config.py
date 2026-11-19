@@ -24,5 +24,7 @@ def ensure_data_directories() -> None:
         DATA_DIR / "fonts",
         DATA_DIR / "output",
         DATA_DIR / "thumbnails",
+        DATA_DIR / "waveforms",
+        DATA_DIR / "live",
     ):
         path.mkdir(parents=True, exist_ok=True)

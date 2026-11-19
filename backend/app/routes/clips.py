@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from app.db import connect
-from app.schemas import ClipCreate
+from app.schemas import ClipBatchCreate, ClipCreate
 
 router = APIRouter(prefix="/api", tags=["clips"])
 
@@ -40,6 +40,44 @@ def queue_clip(video_id: str, request: ClipCreate) -> dict:
             (job_id, video["project_id"], json.dumps(payload)),
         )
     return {"job_id": job_id, "status": "queued"}
+
+
+@router.post("/videos/{video_id}/clips/batch", status_code=202)
+def queue_clip_batch(video_id: str, request: ClipBatchCreate) -> dict:
+    segments = sorted(request.segments, key=lambda segment: segment.start_time)
+    job_ids = [str(uuid4()) for _ in segments]
+    with connect() as connection:
+        video = connection.execute(
+            "SELECT project_id, duration FROM videos WHERE id = ?",
+            (video_id,),
+        ).fetchone()
+        if video is None:
+            raise HTTPException(status_code=404, detail="Video not found.")
+        if any(segment.end_time > video["duration"] for segment in segments):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Every segment must end within the video duration ({video['duration']:.2f} seconds).",
+            )
+        connection.executemany(
+            "INSERT INTO jobs (id, project_id, kind, status, message, payload) "
+            "VALUES (?, ?, 'clip', 'queued', 'Waiting in clip queue', ?)",
+            [
+                (
+                    job_id,
+                    video["project_id"],
+                    json.dumps(
+                        {
+                            "video_id": video_id,
+                            "start_time": segment.start_time,
+                            "end_time": segment.end_time,
+                            "mode": request.mode,
+                        }
+                    ),
+                )
+                for job_id, segment in zip(job_ids, segments)
+            ],
+        )
+    return {"job_ids": job_ids, "status": "queued"}
 
 
 @router.get("/clips/{clip_id}/file")

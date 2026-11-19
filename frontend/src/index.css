@@ -65,6 +65,36 @@ h2 { font-size: 1.28rem; letter-spacing: -.025em; margin: 0; }
 .back-link { display: inline-block; color: #94a0b7; margin-bottom: 14px; font-size: .86rem; }
 .editor-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .85fr); gap: 20px; }
 .video-player { display: block; width: 100%; aspect-ratio: 16 / 9; background: #05080e; border-radius: 10px; margin-top: 15px; }
+.source-frame { position: relative; width: 100%; overflow: hidden; background: #05080e; border-radius: 10px; margin-top: 15px; touch-action: none; }
+.source-frame > video { display: block; width: 100%; height: 100%; object-fit: fill; }
+.region-overlay { position: absolute; inset: 0; pointer-events: none; touch-action: none; }
+.region-box { position: absolute; display: flex; align-items: flex-start; padding: 4px; border: 2px dashed; color: #fff; font-size: .68rem; font-weight: 800; text-shadow: 0 1px 3px #000; cursor: move; overflow: hidden; pointer-events: auto; }
+.region-gameplay { border-color: #67e8c1; background: #67e8c11a; }
+.region-facecam { border-color: #38bdf8; background: #38bdf822; }
+.region-resize-handle { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; border-left: 2px solid currentColor; border-top: 2px solid currentColor; background: #0b1020aa; cursor: nwse-resize; touch-action: none; }
+.layout-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: end; margin: 14px 0; }
+.region-mode-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.region-mode-buttons .active { outline: 2px solid #67e8c1; }
+.output-preview { width: min(100%, 360px); margin: 12px auto 0; overflow: hidden; border-radius: 12px; background: #05080e; border: 1px solid #ffffff20; }
+.output-preview.single-preview { position: relative; }
+.output-preview video { display: block; width: 100%; height: 100%; }
+.output-preview.single-preview video { object-fit: cover; }
+.split-preview { display: flex; flex-direction: column; }
+.split-preview-tile { position: relative; height: 50%; min-height: 100px; overflow: hidden; }
+.split-preview-tile + .split-preview-tile { border-top: 2px solid #67e8c1; }
+.split-preview-tile video { position: absolute; object-fit: cover; }
+.timeline-wrap { margin-top: 16px; }
+.timeline-toolbar, .timeline-zoom { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.timeline-zoom { justify-content: flex-end; }
+.timeline-zoom button { min-width: 34px; padding: 5px 9px; }
+.waveform-scroll { overflow-x: auto; overflow-y: hidden; border: 1px solid #ffffff12; border-radius: 10px; background: #0b1220; margin-top: 8px; }
+.waveform-canvas { min-width: 100%; }
+.timeline-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.timeline-segments { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.timeline-segment { display: flex; gap: 6px; align-items: center; padding: 6px 9px; border: 1px solid #ffffff18; border-radius: 8px; background: #0b1220; color: #aab4ca; font-size: .75rem; cursor: pointer; }
+.timeline-segment.selected { border-color: #67e8c1; color: #67e8c1; }
+.timeline-segment button { background: transparent; padding: 0 2px; color: inherit; }
+.word-point-mode { max-width: 130px; }
 .clip-form { display: flex; flex-direction: column; gap: 16px; }
 .time-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .clip-list { display: flex; flex-direction: column; }
@@ -134,6 +164,26 @@ h2 { font-size: 1.28rem; letter-spacing: -.025em; margin: 0; }
 .job-progress small { color: #94a0b7; text-align: right; }
 .job-failed { border-color: #f8717188; }
 .settings-form { display: flex; flex-direction: column; gap: 14px; }
+.live-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 15px; align-items: end; }
+.live-url, .live-note { grid-column: 1 / -1; }
+.live-note { margin: 0; }
+.live-message { margin: 0 0 18px; }
+.live-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-bottom: 16px; }
+.live-presets .selected { outline: 2px solid #67e8c1; }
+.live-recording-list, .live-candidate-list { display: flex; flex-direction: column; gap: 10px; }
+.live-recording-card { display: flex; flex-direction: column; gap: 9px; padding: 16px; border: 1px solid #ffffff14; border-radius: 12px; background: #0b122077; }
+.live-recording-heading, .live-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.live-source { max-width: 100%; overflow-wrap: anywhere; }
+.live-recording-card p { margin: 0; }
+.live-actions { justify-content: flex-start; }
+.live-actions button { padding: 8px 11px; font-size: .8rem; }
+.live-error { overflow-wrap: anywhere; }
+.live-candidate { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 0; border-bottom: 1px solid #ffffff10; }
+.live-candidate:last-child { border-bottom: 0; }
+.live-candidate p { margin: 6px 0 0; }
+.hotkey-panel { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.hotkey-panel p { max-width: 620px; margin: 0; }
+.hotkey-panel code { color: #67e8c1; }
 .footer { text-align: center; color: #556177; font-size: .67rem; letter-spacing: .14em; padding: 24px; }
 
 @media (max-width: 760px) {
@@ -144,6 +194,7 @@ h2 { font-size: 1.28rem; letter-spacing: -.025em; margin: 0; }
   .suggestion-card .thumbnail-button, .suggestion-card .thumbnail-placeholder { max-width: 420px; }
   .signal-weights { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
   .section-heading, .page-title-row { align-items: flex-start; flex-direction: column; }
+  .hotkey-panel { align-items: flex-start; flex-direction: column; }
   .transcript-controls { width: 100%; flex-wrap: wrap; }
   .transcript-controls .field { flex: 1; }
   .job-card { width: 100%; }
@@ -158,4 +209,5 @@ h2 { font-size: 1.28rem; letter-spacing: -.025em; margin: 0; }
   .clip-row .button { padding: 8px; }
   .clip-actions { flex-direction: column; }
   .transcript-footer { align-items: flex-start; flex-direction: column; }
+  .live-candidate { align-items: flex-start; flex-direction: column; }
 }

@@ -2,6 +2,7 @@ import {
   ChangeEvent,
   DragEvent,
   FormEvent,
+  PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useRef,
@@ -16,18 +17,35 @@ import {
   HighlightAnalysis,
   HighlightSuggestion,
   Job,
+  LayoutPreset,
+  LiveCandidate,
+  LiveRecording,
   ProjectDetail,
   ProjectSummary,
   Transcript,
   TranscriptWord,
   Video,
+  VideoRegion,
   videoUrl,
 } from "./api";
+import WaveformTimeline, { TimelineSegment } from "./WaveformTimeline";
 
 const ACCEPTED_FILES = ".mp4,.mkv,.mov,.webm,.avi";
 const CHUNK_SIZE = 8 * 1024 * 1024;
 const MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024;
 type CaptionPreset = "bold_yellow" | "minimal_white" | "boxed" | "glow";
+type AspectRatio = "9:16" | "1:1" | "4:5" | "16:9";
+type RegionKind = "facecam" | "gameplay";
+
+function createSegmentId(): string {
+  return crypto.randomUUID();
+}
+
+function defaultRegion(kind: RegionKind): VideoRegion {
+  return kind === "facecam"
+    ? { x: 0.68, y: 0.04, width: 0.28, height: 0.34 }
+    : { x: 0.02, y: 0.28, width: 0.96, height: 0.68 };
+}
 
 function Header() {
   return (
@@ -35,6 +53,7 @@ function Header() {
       <Link to="/" className="brand">LOCAL CLIPPER</Link>
       <nav>
         <Link to="/">Projects</Link>
+        <Link to="/live">Live</Link>
         <Link to="/settings">Settings</Link>
       </nav>
     </header>
@@ -312,6 +331,242 @@ function useJobProgress(jobId: string | null, onFinished: () => void) {
   return { job, error };
 }
 
+function LivePage() {
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [projectId, setProjectId] = useState("");
+  const [recordings, setRecordings] = useState<LiveRecording[]>([]);
+  const [candidates, setCandidates] = useState<LiveCandidate[]>([]);
+  const [url, setUrl] = useState("");
+  const [bufferMinutes, setBufferMinutes] = useState(30);
+  const [diskCapGb, setDiskCapGb] = useState(20);
+  const [audioTrigger, setAudioTrigger] = useState(false);
+  const [audioThreshold, setAudioThreshold] = useState(-10);
+  const [chatTrigger, setChatTrigger] = useState(false);
+  const [chatThreshold, setChatThreshold] = useState(30);
+  const [clipSeconds, setClipSeconds] = useState(60);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const { job, error: jobError } = useJobProgress(jobId, () => setRefresh((value) => value + 1));
+
+  useEffect(() => {
+    apiRequest<ProjectSummary[]>("/api/projects")
+      .then((result) => {
+        setProjects(result);
+        setProjectId((current) => current || result[0]?.id || "");
+      })
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : "Could not load projects."),
+      );
+  }, []);
+
+  useEffect(() => {
+    if (!projectId) {
+      setRecordings([]);
+      setCandidates([]);
+      return;
+    }
+    let active = true;
+    const load = () => Promise.all([
+      apiRequest<LiveRecording[]>(`/api/projects/${projectId}/live-recordings`),
+      apiRequest<LiveCandidate[]>(`/api/projects/${projectId}/live-candidates`),
+    ]).then(([nextRecordings, nextCandidates]) => {
+      if (active) {
+        setRecordings(nextRecordings);
+        setCandidates(nextCandidates);
+      }
+    }).catch((reason: unknown) => {
+      if (active) setError(reason instanceof Error ? reason.message : "Could not load live status.");
+    });
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 2500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [projectId, refresh]);
+
+  async function startRecording(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!projectId) return;
+    setError("");
+    setMessage("");
+    try {
+      await apiRequest(`/api/projects/${projectId}/live-recordings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          buffer_minutes: bufferMinutes,
+          disk_cap_gb: diskCapGb,
+          audio_trigger_enabled: audioTrigger,
+          audio_peak_dbfs: audioThreshold,
+          chat_trigger_enabled: chatTrigger,
+          chat_messages_per_minute: chatThreshold,
+        }),
+      });
+      setUrl("");
+      setMessage("Recording requested. It will appear below as the worker connects.");
+      setRefresh((value) => value + 1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not start recording.");
+    }
+  }
+
+  async function stopRecording(recordingId: string) {
+    setError("");
+    try {
+      await apiRequest(`/api/live-recordings/${recordingId}/stop`, { method: "POST" });
+      setRefresh((value) => value + 1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not stop recording.");
+    }
+  }
+
+  async function queueClip(recordingId: string, candidateId?: string) {
+    setError("");
+    setMessage("");
+    try {
+      const path = candidateId
+        ? `/api/live-candidates/${candidateId}/clip`
+        : `/api/live-recordings/${recordingId}/clip`;
+      const result = await apiRequest<{ job_id: string }>(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seconds: clipSeconds }),
+      });
+      setJobId(result.job_id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not queue live clip.");
+    }
+  }
+
+  const activeRecordings = recordings.filter((recording) =>
+    ["starting", "recording", "reconnecting"].includes(recording.status),
+  );
+
+  return (
+    <main className="page-shell">
+      <div className="page-title-row">
+        <div><p className="eyebrow">LIVE CAPTURE</p><h1>Record and clip in the moment</h1></div>
+        {job && <JobCard job={job} />}
+      </div>
+      {(error || jobError) && <p className="error">{error || jobError}</p>}
+      {message && <p className="success live-message">{message}</p>}
+      <section className="panel">
+        <div className="section-heading">
+          <div><p className="eyebrow">NEW RECORDING</p><h2>Start a rolling buffer</h2></div>
+          <label className="field compact">
+            <span>Project</span>
+            <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>
+          </label>
+        </div>
+        {projects.length === 0 ? (
+          <p className="notice">Create a project before starting a live recording.</p>
+        ) : (
+          <form className="live-form" onSubmit={(event) => void startRecording(event)}>
+            <label className="field live-url">
+              <span>Live stream URL</span>
+              <input type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" />
+            </label>
+            <label className="field">
+              <span>Rolling buffer (minutes)</span>
+              <input type="number" min={1} max={240} value={bufferMinutes} onChange={(event) => setBufferMinutes(Number(event.target.value))} />
+            </label>
+            <label className="field">
+              <span>Disk cap (GB)</span>
+              <input type="number" min={0.25} max={500} step={0.25} value={diskCapGb} onChange={(event) => setDiskCapGb(Number(event.target.value))} />
+            </label>
+            <label className="check-field"><input type="checkbox" checked={audioTrigger} onChange={(event) => setAudioTrigger(event.target.checked)} />Create candidates on loudness spikes</label>
+            <label className="field">
+              <span>Audio peak threshold (dBFS)</span>
+              <input type="number" min={-60} max={0} value={audioThreshold} onChange={(event) => setAudioThreshold(Number(event.target.value))} disabled={!audioTrigger} />
+            </label>
+            <label className="check-field"><input type="checkbox" checked={chatTrigger} onChange={(event) => setChatTrigger(event.target.checked)} />Create candidates on Twitch/YouTube chat spikes</label>
+            <label className="field">
+              <span>Chat messages per minute</span>
+              <input type="number" min={1} max={10000} value={chatThreshold} onChange={(event) => setChatThreshold(Number(event.target.value))} disabled={!chatTrigger} />
+            </label>
+            <button type="submit" disabled={!projectId || !url.trim()}>Start recording</button>
+            <p className="muted small live-note">Buffer cleanup removes the oldest completed segments to stay within the configured time and disk limits. Chat spikes use Twitch IRC or YouTube live chat; unsupported sites can still use loudness triggers.</p>
+          </form>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="section-heading">
+          <div><p className="eyebrow">RECORDINGS</p><h2>Live status</h2></div>
+          <label className="field compact">
+            <span>Clip length (seconds)</span>
+            <input type="number" min={1} max={600} value={clipSeconds} onChange={(event) => setClipSeconds(Number(event.target.value))} />
+          </label>
+        </div>
+        <div className="live-presets">
+          {[30, 60, 90].map((seconds) => (
+            <button key={seconds} type="button" className={`button secondary ${clipSeconds === seconds ? "selected" : ""}`} onClick={() => setClipSeconds(seconds)}>{seconds}s</button>
+          ))}
+          <span className="muted small">Or enter a custom duration above (1–600 seconds).</span>
+        </div>
+        {recordings.length === 0 ? <p className="muted empty-state">No live recordings in this project yet.</p> : (
+          <div className="live-recording-list">
+            {recordings.map((recording) => {
+              const isActive = activeRecordings.includes(recording);
+              return (
+                <article className="live-recording-card" key={recording.id}>
+                  <div className="live-recording-heading">
+                    <span className={`status-pill status-${recording.status}`}>{recording.status}</span>
+                    <span className="muted small">{recording.reconnect_count} reconnects</span>
+                  </div>
+                  <strong className="live-source">{recording.source_url}</strong>
+                  <p className="muted small">
+                    Buffer {recording.buffered_seconds.toFixed(0)}s / {recording.buffer_seconds}s
+                    {" · "}{(recording.buffer_size_bytes / (1024 * 1024)).toFixed(1)} MB / {(recording.disk_cap_bytes / (1024 * 1024 * 1024)).toFixed(1)} GB
+                  </p>
+                  {recording.last_error && <p className="error live-error">{recording.last_error}</p>}
+                  <div className="live-actions">
+                    <button type="button" disabled={!isActive} onClick={() => void queueClip(recording.id)}>Clip last {clipSeconds}s</button>
+                    <button type="button" className="button secondary" disabled={!isActive} onClick={() => void stopRecording(recording.id)}>Stop</button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="section-heading"><div><p className="eyebrow">AUTO TRIGGERS</p><h2>Clip candidates</h2></div></div>
+        {candidates.length === 0 ? <p className="muted empty-state">Audio or chat spikes will appear here when enabled.</p> : (
+          <div className="live-candidate-list">
+            {candidates.map((candidate) => (
+              <article className="live-candidate" key={candidate.id}>
+                <div><strong>{candidate.reason}</strong><p className="muted small">{new Date(candidate.trigger_at).toLocaleString()}</p></div>
+                {candidate.video_id ? (
+                  <Link className="button secondary" to={`/projects/${projectId}`}>Open clip</Link>
+                ) : (
+                  <button type="button" onClick={() => void queueClip(candidate.recording_id, candidate.id)}>Clip last {clipSeconds}s</button>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {job?.status === "completed" && (
+        <p className="success live-message">Live clip is ready in the selected project's video list. <Link to={`/projects/${projectId}`}>Open the editor →</Link></p>
+      )}
+      {job?.status === "failed" && job.error && <p className="error">{job.error}</p>}
+      <section className="panel hotkey-panel">
+        <div><p className="eyebrow">WINDOWS HOTKEY</p><h2>Ctrl + Alt + C</h2></div>
+        <p className="muted small">Run <code>run_live_hotkey.bat</code> in a separate window to clip the most recently started active recording while another app is focused. Use <code>run_live_hotkey.bat --seconds 90</code> to change its duration.</p>
+      </section>
+    </main>
+  );
+}
+
 function ProjectPage() {
   const { projectId = "" } = useParams();
   const [searchParams] = useSearchParams();
@@ -321,6 +576,10 @@ function ProjectPage() {
   const [selectedVideoId, setSelectedVideoId] = useState("");
   const [startTime, setStartTime] = useState("0");
   const [endTime, setEndTime] = useState("");
+  const [segments, setSegments] = useState<TimelineSegment[]>([]);
+  const [selectedSegmentId, setSelectedSegmentId] = useState("");
+  const [wordPointMode, setWordPointMode] = useState<"preview" | "in" | "out">("preview");
+  const [waveformError, setWaveformError] = useState("");
   const [mode, setMode] = useState<"accurate" | "copy">("accurate");
   const [transcript, setTranscript] = useState<Transcript | null>(null);
   const [transcriptError, setTranscriptError] = useState("");
@@ -339,7 +598,25 @@ function ProjectPage() {
   const [captionPosition, setCaptionPosition] = useState<"top" | "middle" | "bottom">("bottom");
   const [captionBitrate, setCaptionBitrate] = useState("8M");
   const [captionFps, setCaptionFps] = useState(30);
-  const [captionResolution, setCaptionResolution] = useState("1080x1920");
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("9:16");
+  const [backgroundFill, setBackgroundFill] = useState<"blur" | "crop" | "pad">("blur");
+  const [layoutMode, setLayoutMode] = useState<"single" | "gaming_split">("single");
+  const [smartReframe, setSmartReframe] = useState(false);
+  const [facecamRegion, setFacecamRegion] = useState<VideoRegion>(defaultRegion("facecam"));
+  const [gameplayRegion, setGameplayRegion] = useState<VideoRegion>(defaultRegion("gameplay"));
+  const [activeRegion, setActiveRegion] = useState<RegionKind>("gameplay");
+  const [regionDrag, setRegionDrag] = useState<{
+    kind: RegionKind;
+    mode: "draw" | "move" | "resize";
+    startX: number;
+    startY: number;
+    original: VideoRegion;
+  } | null>(null);
+  const [layoutPresets, setLayoutPresets] = useState<LayoutPreset[]>([]);
+  const [presetName, setPresetName] = useState("");
+  const [selectedPresetId, setSelectedPresetId] = useState("");
+  const [reframeTrack, setReframeTrack] = useState<{ time: number; x: number; y: number }[]>([]);
+  const [reframeError, setReframeError] = useState("");
   const [fonts, setFonts] = useState<{ filename: string; name: string }[]>([]);
   const [captionFont, setCaptionFont] = useState("");
   const [exportError, setExportError] = useState("");
@@ -353,12 +630,32 @@ function ProjectPage() {
   const [gamingMode, setGamingMode] = useState(false);
   const [ollamaModel, setOllamaModel] = useState("qwen2.5:7b");
   const [signalWeights, setSignalWeights] = useState({ transcript: 0.4, audio: 0.25, scene: 0.15, motion: 0.2 });
-  const playerRef = useRef<HTMLVideoElement>(null);
+  const playerRef = useRef<HTMLVideoElement | null>(null);
+  const previewVideoRefs = useRef<(HTMLVideoElement | null)[]>([]);
+  const regionOverlayRef = useRef<HTMLDivElement>(null);
+  const pendingTimelineRef = useRef<{ videoId: string; start: number; end: number } | null>(null);
+  const [sourceMedia, setSourceMedia] = useState<HTMLVideoElement | null>(null);
+  const setVideoPlayerRef = useCallback((element: HTMLVideoElement | null) => {
+    playerRef.current = element;
+    setSourceMedia(element);
+  }, []);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const { job, error: jobError } = useJobProgress(jobId, () => setRefresh((value) => value + 1));
   const video = detail?.videos.find((item) => item.id === selectedVideoId);
   const captionClip = detail?.clips.find((clip) => clip.id === captionClipId);
+  const selectedSegment = segments.find((segment) => segment.id === selectedSegmentId);
+  const outputDimensions: Record<AspectRatio, [number, number]> = {
+    "9:16": [1080, 1920],
+    "1:1": [1080, 1080],
+    "4:5": [1080, 1350],
+    "16:9": [1920, 1080],
+  };
+  const [previewWidth, previewHeight] = outputDimensions[aspectRatio];
+  const previewFocus = getTrackFocus(
+    reframeTrack,
+    Math.max(0, playbackTime - (selectedSegment?.start_time ?? 0)),
+  );
   const canExportCaptions = !!captionClip
     && transcript?.video_id === captionClip.video_id
     && !!transcript.words.length;
@@ -378,7 +675,23 @@ function ProjectPage() {
   }, [loadProject, refresh]);
 
   useEffect(() => {
-    if (video) setEndTime(String(Math.min(video.duration, 30)));
+    if (!video) {
+      setSegments([]);
+      setSelectedSegmentId("");
+      return;
+    }
+    const pending = pendingTimelineRef.current?.videoId === video.id ? pendingTimelineRef.current : null;
+    pendingTimelineRef.current = null;
+    const start = pending?.start ?? 0;
+    const end = pending?.end ?? Math.min(video.duration, 30);
+    const initialSegment = { id: createSegmentId(), start_time: start, end_time: end };
+    setSegments([initialSegment]);
+    setSelectedSegmentId(initialSegment.id);
+    setStartTime(String(start));
+    setEndTime(String(end));
+    setReframeTrack([]);
+    setReframeError("");
+    setWaveformError("");
   }, [video?.id]);
 
   useEffect(() => {
@@ -400,6 +713,38 @@ function ProjectPage() {
         setExportError(reason instanceof Error ? reason.message : "Could not load caption fonts."),
       );
   }, []);
+
+  useEffect(() => {
+    apiRequest<LayoutPreset[]>(`/api/projects/${projectId}/layout-presets`)
+      .then(setLayoutPresets)
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : "Could not load layout presets."),
+      );
+  }, [projectId]);
+
+  useEffect(() => {
+    setReframeTrack([]);
+    setReframeError("");
+    if (!video || !smartReframe || !selectedSegment) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      const query = new URLSearchParams({
+        start_time: String(selectedSegment.start_time),
+        end_time: String(selectedSegment.end_time),
+      });
+      apiRequest<{ track: { time: number; x: number; y: number }[] }>(
+        `/api/videos/${video.id}/reframe-track?${query.toString()}`,
+      )
+        .then((result) => { if (active) setReframeTrack(result.track); })
+        .catch((reason: unknown) => {
+          if (active) setReframeError(reason instanceof Error ? reason.message : "Could not track the speaker.");
+        });
+    }, 450);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [video?.id, smartReframe, selectedSegment?.start_time, selectedSegment?.end_time]);
 
   useEffect(() => {
     setHighlightAnalysis(null);
@@ -558,7 +903,7 @@ function ProjectPage() {
     }
     setExporting(true);
     try {
-      const [width, height] = captionResolution.split("x").map(Number);
+      const [width, height] = outputDimensions[aspectRatio];
       const result = await apiRequest<{ job_id: string }>(`/api/clips/${captionClipId}/exports`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -575,6 +920,12 @@ function ProjectPage() {
           fps: captionFps,
           width,
           height,
+          aspect_ratio: aspectRatio,
+          smart_reframe: smartReframe,
+          background_fill: backgroundFill,
+          layout: layoutMode,
+          facecam_region: facecamRegion,
+          gameplay_region: gameplayRegion,
         }),
       });
       setJobId(result.job_id);
@@ -585,22 +936,318 @@ function ProjectPage() {
     }
   }
 
-  async function createClip(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!video) return;
+  const handleTimelineRangeChange = useCallback((id: string, start: number, end: number) => {
+    setSegments((current) => current.map((segment) =>
+      segment.id === id ? { ...segment, start_time: start, end_time: end } : segment,
+    ));
+    setSelectedSegmentId(id);
+    setStartTime(String(start));
+    setEndTime(String(end));
+  }, []);
+
+  const handleTimelineSelect = useCallback((id: string) => {
+    const segment = segments.find((item) => item.id === id);
+    if (!segment) return;
+    setSelectedSegmentId(id);
+    setStartTime(String(segment.start_time));
+    setEndTime(String(segment.end_time));
+  }, [segments]);
+
+  function updateSegmentRange(id: string, start: number, end: number) {
+    setSegments((current) => current.map((segment) =>
+      segment.id === id ? { ...segment, start_time: start, end_time: end } : segment,
+    ));
+    setSelectedSegmentId(id);
+    setStartTime(String(start));
+    setEndTime(String(end));
+  }
+
+  function setRegion(kind: RegionKind, value: VideoRegion) {
+    if (kind === "facecam") setFacecamRegion(value);
+    else setGameplayRegion(value);
+  }
+
+  function getPointerPosition(event: ReactPointerEvent<HTMLElement>) {
+    const bounds = regionOverlayRef.current?.getBoundingClientRect();
+    if (!bounds || !bounds.width || !bounds.height) return null;
+    return {
+      x: Math.max(0, Math.min(0.9999, (event.clientX - bounds.left) / bounds.width)),
+      y: Math.max(0, Math.min(0.9999, (event.clientY - bounds.top) / bounds.height)),
+    };
+  }
+
+  function beginRegionDraw(event: ReactPointerEvent<HTMLElement>) {
+    const point = getPointerPosition(event);
+    if (!point || point.y >= 0.9) return;
+    setActiveRegion(activeRegion);
+    const initialRegion = {
+      x: point.x,
+      y: point.y,
+      width: Math.min(0.03, 1 - point.x),
+      height: Math.min(0.03, 1 - point.y),
+    };
+    setRegion(activeRegion, initialRegion);
+    setRegionDrag({
+      kind: activeRegion,
+      mode: "draw",
+      startX: point.x,
+      startY: point.y,
+      original: initialRegion,
+    });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function beginRegionMove(event: ReactPointerEvent<HTMLElement>, kind: RegionKind) {
+    event.stopPropagation();
+    const point = getPointerPosition(event);
+    if (!point) return;
+    const original = kind === "facecam" ? facecamRegion : gameplayRegion;
+    setActiveRegion(kind);
+    setRegionDrag({ kind, mode: "move", startX: point.x, startY: point.y, original });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function beginRegionResize(event: ReactPointerEvent<HTMLSpanElement>, kind: RegionKind) {
+    event.stopPropagation();
+    const point = getPointerPosition(event);
+    if (!point) return;
+    const original = kind === "facecam" ? facecamRegion : gameplayRegion;
+    setActiveRegion(kind);
+    setRegionDrag({ kind, mode: "resize", startX: point.x, startY: point.y, original });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveRegion(event: ReactPointerEvent<HTMLElement>) {
+    if (!regionDrag) return;
+    const point = getPointerPosition(event);
+    if (!point) return;
+    const dx = point.x - regionDrag.startX;
+    const dy = point.y - regionDrag.startY;
+    if (regionDrag.mode === "draw") {
+      const left = Math.min(regionDrag.startX, point.x);
+      const top = Math.min(regionDrag.startY, point.y);
+      setRegion(regionDrag.kind, {
+        x: left,
+        y: top,
+        width: Math.min(1 - left, Math.max(0.001, Math.abs(dx))),
+        height: Math.min(1 - top, Math.max(0.001, Math.abs(dy))),
+      });
+      return;
+    }
+    const { original } = regionDrag;
+    if (regionDrag.mode === "resize") {
+      setRegion(regionDrag.kind, {
+        ...original,
+        width: Math.max(Math.min(0.001, 1 - original.x), Math.min(1 - original.x, original.width + dx)),
+        height: Math.max(Math.min(0.001, 1 - original.y), Math.min(1 - original.y, original.height + dy)),
+      });
+      return;
+    }
+    setRegion(regionDrag.kind, {
+      ...original,
+      x: Math.max(0, Math.min(1 - original.width, original.x + dx)),
+      y: Math.max(0, Math.min(1 - original.height, original.y + dy)),
+    });
+  }
+
+  function finishRegionDrag() {
+    setRegionDrag(null);
+  }
+
+  function splitSelectedSegment() {
+    if (!selectedSegment) return;
+    if (segments.length >= 30) {
+      setError("A timeline can contain at most 30 clip segments per batch.");
+      return;
+    }
+    if (playbackTime <= selectedSegment.start_time + 0.05 || playbackTime >= selectedSegment.end_time - 0.05) {
+      setError("Move the playhead inside the selected segment before splitting it.");
+      return;
+    }
+    const left = { ...selectedSegment, end_time: playbackTime };
+    const right = { id: createSegmentId(), start_time: playbackTime, end_time: selectedSegment.end_time };
+    setSegments((current) => current.flatMap((segment) =>
+      segment.id === selectedSegment.id ? [left, right] : [segment],
+    ));
+    setSelectedSegmentId(right.id);
+    setStartTime(String(right.start_time));
+    setEndTime(String(right.end_time));
     setError("");
+  }
+
+  function mergeSelectedSegment() {
+    if (segments.length < 2 || !selectedSegment) return;
+    const ordered = [...segments].sort((a, b) => a.start_time - b.start_time);
+    const index = ordered.findIndex((segment) => segment.id === selectedSegment.id);
+    const neighborIndex = index < ordered.length - 1 ? index + 1 : index - 1;
+    const first = ordered[Math.min(index, neighborIndex)];
+    const second = ordered[Math.max(index, neighborIndex)];
+    if (Math.abs(first.end_time - second.start_time) > 0.05) {
+      setError("Only adjacent segments can be merged.");
+      return;
+    }
+    const merged = {
+      id: createSegmentId(),
+      start_time: first.start_time,
+      end_time: second.end_time,
+    };
+    setSegments((current) => [
+      ...current.filter((segment) => segment.id !== first.id && segment.id !== second.id),
+      merged,
+    ].sort((a, b) => a.start_time - b.start_time));
+    setSelectedSegmentId(merged.id);
+    setStartTime(String(merged.start_time));
+    setEndTime(String(merged.end_time));
+    setError("");
+  }
+
+  function setSelectedBoundary(kind: "in" | "out", time: number) {
+    if (!selectedSegment) return;
+    if ((kind === "in" && time >= selectedSegment.end_time)
+      || (kind === "out" && time <= selectedSegment.start_time)) {
+      setError("The in point must be before the out point.");
+      return;
+    }
+    updateSegmentRange(
+      selectedSegment.id,
+      kind === "in" ? time : selectedSegment.start_time,
+      kind === "out" ? time : selectedSegment.end_time,
+    );
+    setError("");
+  }
+
+  async function saveLayoutPreset() {
+    if (!presetName.trim()) return;
     try {
-      const result = await apiRequest<{ job_id: string }>(`/api/videos/${video.id}/clips`, {
+      const saved = await apiRequest<LayoutPreset>(`/api/projects/${projectId}/layout-presets`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ start_time: Number(startTime), end_time: Number(endTime), mode }),
+        body: JSON.stringify({
+          name: presetName,
+          aspect_ratio: aspectRatio,
+          facecam_region: facecamRegion,
+          gameplay_region: gameplayRegion,
+        }),
       });
-      setJobId(result.job_id);
-      setRefresh((value) => value + 1);
+      setLayoutPresets((current) => [...current.filter((item) => item.id !== saved.id), saved]);
+      setSelectedPresetId(saved.id);
+      setPresetName("");
+      setError("");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not queue clip.");
+      setError(reason instanceof Error ? reason.message : "Could not save layout preset.");
     }
   }
+
+  async function deleteLayoutPreset() {
+    if (!selectedPresetId) return;
+    try {
+      await apiRequest(`/api/layout-presets/${selectedPresetId}`, { method: "DELETE" });
+      setLayoutPresets((current) => current.filter((preset) => preset.id !== selectedPresetId));
+      setSelectedPresetId("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not delete layout preset.");
+    }
+  }
+
+  function applyLayoutPreset(presetId: string) {
+    setSelectedPresetId(presetId);
+    const preset = layoutPresets.find((item) => item.id === presetId);
+    if (!preset) return;
+    setAspectRatio(preset.aspect_ratio);
+    setFacecamRegion(preset.facecam_region);
+    setGameplayRegion(preset.gameplay_region);
+    setLayoutMode("gaming_split");
+    setSmartReframe(false);
+  }
+
+  async function createClip(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    if (!video || !segments.length) return;
+    setError("");
+    if (job && ["queued", "running"].includes(job.status)) {
+      setError("Wait for the current job to finish before queueing more clips.");
+      return;
+    }
+    const ranges = segments.map((segment) => (
+      segment.id === selectedSegmentId
+        ? { start_time: Number(startTime), end_time: Number(endTime) }
+        : { start_time: segment.start_time, end_time: segment.end_time }
+    )).sort((a, b) => a.start_time - b.start_time);
+    if (ranges.some((range) =>
+      !Number.isFinite(range.start_time)
+      || !Number.isFinite(range.end_time)
+      || range.start_time < 0
+      || range.end_time <= range.start_time
+      || range.end_time > video.duration,
+    )) {
+      setError("Every timeline segment must have valid in/out points inside the video.");
+      return;
+    }
+    try {
+      const result = await apiRequest<{ job_ids: string[] }>(`/api/videos/${video.id}/clips/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ segments: ranges, mode }),
+      });
+      setJobId(result.job_ids[result.job_ids.length - 1] ?? null);
+      setRefresh((value) => value + 1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not queue timeline clips.");
+    }
+  }
+
+  function editSelectedRange(field: "start" | "end", value: string) {
+    if (field === "start") setStartTime(value);
+    else setEndTime(value);
+    const time = Number(value);
+    if (!selectedSegment || !Number.isFinite(time)) return;
+    const start = field === "start" ? time : selectedSegment.start_time;
+    const end = field === "end" ? time : selectedSegment.end_time;
+    if (start >= 0 && end > start && end <= (video?.duration ?? Number.MAX_SAFE_INTEGER)) {
+      setSegments((current) => current.map((segment) =>
+        segment.id === selectedSegment.id ? { ...segment, start_time: start, end_time: end } : segment,
+      ));
+    }
+  }
+
+  function syncPreviewTime(time: number) {
+    for (const preview of previewVideoRefs.current) {
+      if (preview && Math.abs(preview.currentTime - time) > 0.15) {
+        preview.currentTime = time;
+      }
+    }
+  }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, select, textarea, [contenteditable='true']")) return;
+      if (event.code === "Space" && target?.matches("button, a")) return;
+      if (event.code === "Space") {
+        event.preventDefault();
+        if (playerRef.current?.paused) void playerRef.current.play();
+        else playerRef.current?.pause();
+      } else if (event.key.toLowerCase() === "i") {
+        setSelectedBoundary("in", playbackTime);
+      } else if (event.key.toLowerCase() === "o") {
+        setSelectedBoundary("out", playbackTime);
+      } else if (event.key.toLowerCase() === "c") {
+        void createClip();
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        const frame = 1 / (video?.fps || 30);
+        if (playerRef.current) {
+          playerRef.current.currentTime = Math.max(
+            0,
+            Math.min(video?.duration ?? Number.MAX_SAFE_INTEGER,
+              playerRef.current.currentTime + (event.key === "ArrowLeft" ? -frame : frame)),
+          );
+        }
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [playbackTime, selectedSegment, segments, selectedSegmentId, startTime, endTime, video, mode, job?.status]);
 
   if (!detail) {
     return <main className="page-shell"><p className="muted">{error || "Loading project…"}</p></main>;
@@ -634,14 +1281,64 @@ function ProjectPage() {
               </label>
               {video && (
                 <>
-                  <video
-                    ref={playerRef}
-                    className="video-player"
-                    controls
-                    preload="metadata"
-                    src={videoUrl(video.file_url)}
-                    onTimeUpdate={(event) => setPlaybackTime(event.currentTarget.currentTime)}
-                  />
+                  <div
+                    className="source-frame"
+                    style={{ aspectRatio: `${video.width ?? 16} / ${video.height ?? 9}` }}
+                  >
+                    <video
+                      ref={setVideoPlayerRef}
+                      controls
+                      preload="metadata"
+                      src={videoUrl(video.file_url)}
+                      onTimeUpdate={(event) => {
+                        const time = event.currentTarget.currentTime;
+                        setPlaybackTime(time);
+                        syncPreviewTime(time);
+                      }}
+                      onPlay={() => previewVideoRefs.current.forEach((preview) => {
+                        if (preview) void preview.play().catch(() => undefined);
+                      })}
+                      onPause={() => previewVideoRefs.current.forEach((preview) => preview?.pause())}
+                      onPointerDown={layoutMode === "gaming_split" ? beginRegionDraw : undefined}
+                      onPointerMove={layoutMode === "gaming_split" ? moveRegion : undefined}
+                      onPointerUp={layoutMode === "gaming_split" ? finishRegionDrag : undefined}
+                      onPointerCancel={layoutMode === "gaming_split" ? finishRegionDrag : undefined}
+                    />
+                    {layoutMode === "gaming_split" && (
+                      <div
+                        className="region-overlay"
+                        ref={regionOverlayRef}
+                        onPointerMove={moveRegion}
+                        onPointerUp={finishRegionDrag}
+                        onPointerCancel={finishRegionDrag}
+                      >
+                        {([
+                          ["gameplay", gameplayRegion],
+                          ["facecam", facecamRegion],
+                        ] as const).map(([kind, region]) => (
+                          <div
+                            key={kind}
+                            className={`region-box region-${kind}`}
+                            style={{
+                              left: `${region.x * 100}%`,
+                              top: `${region.y * 100}%`,
+                              width: `${region.width * 100}%`,
+                              height: `${region.height * 100}%`,
+                              opacity: activeRegion === kind ? 1 : 0.7,
+                            }}
+                            onPointerDown={(event) => beginRegionMove(event, kind)}
+                          >
+                            {kind === "facecam" ? "FACECAM" : "GAMEPLAY"}
+                            <span
+                              className="region-resize-handle"
+                              onPointerDown={(event) => beginRegionResize(event, kind)}
+                              aria-label={`Resize ${kind} region`}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <p className="muted small">
                     {formatTime(video.duration)}{video.width && video.height ? ` · ${video.width}×${video.height}` : ""}
                     {video.fps ? ` · ${video.fps.toFixed(2)} fps` : ""}
@@ -655,10 +1352,10 @@ function ProjectPage() {
         <div className="panel">
           <div className="section-heading"><div><p className="eyebrow">EDIT</p><h2>Create a clip</h2></div></div>
           {video ? (
-            <form className="clip-form" onSubmit={createClip}>
+            <form className="clip-form" onSubmit={(event) => void createClip(event)}>
               <div className="time-inputs">
-                <label className="field"><span>Start (seconds)</span><input type="number" min="0" step="0.1" value={startTime} onChange={(event) => setStartTime(event.target.value)} required /></label>
-                <label className="field"><span>End (seconds)</span><input type="number" min="0.1" step="0.1" max={video.duration} value={endTime} onChange={(event) => setEndTime(event.target.value)} required /></label>
+                <label className="field"><span>Start (seconds)</span><input type="number" min="0" step="0.1" value={startTime} onChange={(event) => editSelectedRange("start", event.target.value)} required /></label>
+                <label className="field"><span>End (seconds)</span><input type="number" min="0.1" step="0.1" max={video.duration} value={endTime} onChange={(event) => editSelectedRange("end", event.target.value)} required /></label>
               </div>
               <label className="field">
                 <span>Cut mode</span>
@@ -667,11 +1364,57 @@ function ProjectPage() {
                   <option value="copy">Fast stream copy (keyframe-limited)</option>
                 </select>
               </label>
-              <button type="submit" disabled={!!job && (job.status === "queued" || job.status === "running")}>Create clip</button>
-              <p className="muted small">Times are seconds from the start of the selected video.</p>
+              <button type="submit" disabled={!segments.length || (!!job && (job.status === "queued" || job.status === "running"))}>
+                Create {segments.length > 1 ? `${segments.length} clips` : "clip"}
+              </button>
+              <p className="muted small">Times are seconds from the selected video. Creating queues every timeline segment.</p>
             </form>
           ) : <p className="empty-state muted">Choose a video to enable clipping.</p>}
         </div>
+      </section>
+      <section className="panel timeline-panel">
+        <div className="section-heading">
+          <div><p className="eyebrow">TIMELINE</p><h2>Fine-tune clip segments</h2></div>
+          {selectedSegment && <span className="muted small">{formatTime(selectedSegment.end_time - selectedSegment.start_time)} selected</span>}
+        </div>
+        {video && selectedSegment ? (
+          <>
+            <WaveformTimeline
+              videoId={video.id}
+              fileUrl={video.file_url}
+              duration={video.duration}
+              media={sourceMedia}
+              segments={segments}
+              selectedSegmentId={selectedSegmentId}
+              onRangeChange={handleTimelineRangeChange}
+              onSelect={handleTimelineSelect}
+              onError={setWaveformError}
+            />
+            {waveformError && <p className="error">{waveformError}</p>}
+            <div className="timeline-actions">
+              <button type="button" className="secondary-button" onClick={() => setSelectedBoundary("in", playbackTime)}>Set in (I)</button>
+              <button type="button" className="secondary-button" onClick={() => setSelectedBoundary("out", playbackTime)}>Set out (O)</button>
+              <button type="button" className="secondary-button" onClick={splitSelectedSegment}>Split at playhead</button>
+              <button type="button" className="secondary-button" disabled={segments.length < 2} onClick={mergeSelectedSegment}>Merge adjacent</button>
+              <button type="button" disabled={!!job && ["queued", "running"].includes(job.status)} onClick={() => void createClip()}>
+                Create {segments.length > 1 ? `${segments.length} clips` : "clip"} (C)
+              </button>
+            </div>
+            <div className="timeline-segments">
+              {[...segments].sort((a, b) => a.start_time - b.start_time).map((segment, index) => (
+                <button
+                  type="button"
+                  className={`timeline-segment ${segment.id === selectedSegmentId ? "selected" : ""}`}
+                  key={segment.id}
+                  onClick={() => handleTimelineSelect(segment.id)}
+                >
+                  {index + 1} · {formatTime(segment.start_time)}–{formatTime(segment.end_time)}
+                </button>
+              ))}
+            </div>
+            <p className="muted small shortcut-help">Shortcuts: Space play/pause · I in · O out · C queue clips · ←/→ step one frame</p>
+          </>
+        ) : <p className="empty-state muted">Add a video to edit its timeline.</p>}
       </section>
       <section className="panel transcript-panel">
         <div className="section-heading">
@@ -688,6 +1431,14 @@ function ProjectPage() {
               <select value={transcriptDevice} onChange={(event) => setTranscriptDevice(event.target.value as "auto" | "cpu")}>
                 <option value="auto">GPU with CPU fallback</option>
                 <option value="cpu">CPU</option>
+              </select>
+            </label>
+            <label className="field word-point-mode">
+              <span>Word click</span>
+              <select value={wordPointMode} onChange={(event) => setWordPointMode(event.target.value as "preview" | "in" | "out")}>
+                <option value="preview">Preview</option>
+                <option value="in">Set in point</option>
+                <option value="out">Set out point</option>
               </select>
             </label>
             <button type="button" disabled={!video || (!!job && ["queued", "running"].includes(job.status) && job.kind === "transcription")} onClick={() => void generateTranscript()}>
@@ -724,8 +1475,12 @@ function ProjectPage() {
                     <button
                       type="button"
                       className="word-text"
-                      title="Click to seek, double-click to edit"
-                      onClick={() => { if (playerRef.current) playerRef.current.currentTime = word.start_time; }}
+                      title={`Click to ${wordPointMode === "preview" ? "seek" : `set the ${wordPointMode} point and seek`}; double-click to edit`}
+                      onClick={() => {
+                        if (playerRef.current) playerRef.current.currentTime = word.start_time;
+                        if (wordPointMode === "in") setSelectedBoundary("in", word.start_time);
+                        if (wordPointMode === "out") setSelectedBoundary("out", word.end_time);
+                      }}
                       onDoubleClick={() => setEditingWord(word.word_index)}
                     >{word.text}</button>
                   )}
@@ -733,7 +1488,7 @@ function ProjectPage() {
               ))}
             </div>
             <div className="transcript-footer">
-              <span className="muted small">Click a word to seek · double-click a word to edit it</span>
+              <span className="muted small">Click words to seek or set the selected in/out point · double-click to edit</span>
               <button type="button" className="secondary-button" disabled={savingTranscript} onClick={() => void saveTranscript()}>
                 {savingTranscript ? "Saving…" : "Save transcript"}
               </button>
@@ -816,7 +1571,26 @@ function ProjectPage() {
               <select value={captionClipId} onChange={(event) => {
                 const nextClip = detail.clips.find((clip) => clip.id === event.target.value);
                 setCaptionClipId(event.target.value);
-                if (nextClip) setSelectedVideoId(nextClip.video_id);
+                if (nextClip) {
+                  pendingTimelineRef.current = {
+                    videoId: nextClip.video_id,
+                    start: nextClip.start_time,
+                    end: nextClip.end_time,
+                  };
+                  setSelectedVideoId(nextClip.video_id);
+                  if (nextClip.video_id === video?.id) {
+                    const selected = {
+                      id: createSegmentId(),
+                      start_time: nextClip.start_time,
+                      end_time: nextClip.end_time,
+                    };
+                    pendingTimelineRef.current = null;
+                    setSegments([selected]);
+                    setSelectedSegmentId(selected.id);
+                    setStartTime(String(selected.start_time));
+                    setEndTime(String(selected.end_time));
+                  }
+                }
               }} required>
                 <option value="">Choose a clip</option>
                 {detail.clips.map((clip) => <option key={clip.id} value={clip.id}>{detail.videos.find((item) => item.id === clip.video_id)?.title ?? "Video"} · {formatTime(clip.start_time)}–{formatTime(clip.end_time)}</option>)}
@@ -862,9 +1636,12 @@ function ProjectPage() {
               <input type="file" accept=".ttf,font/ttf" onChange={(event) => void uploadCaptionFont(event)} />
             </label>
             <div className="time-inputs">
-              <label className="field"><span>Resolution</span>
-                <select value={captionResolution} onChange={(event) => setCaptionResolution(event.target.value)}>
-                  <option value="1080x1920">1080×1920 vertical</option><option value="720x1280">720×1280 vertical</option><option value="1080x1080">1080×1080 square</option>
+              <label className="field"><span>Aspect ratio</span>
+                <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as AspectRatio)}>
+                  <option value="9:16">9:16 · Shorts / Reels</option>
+                  <option value="1:1">1:1 · Square</option>
+                  <option value="4:5">4:5 · Portrait feed</option>
+                  <option value="16:9">16:9 · Landscape</option>
                 </select>
               </label>
               <label className="field"><span>Bitrate</span>
@@ -873,6 +1650,50 @@ function ProjectPage() {
                 </select>
               </label>
             </div>
+            <div className="layout-controls">
+              <label className="field"><span>Video layout</span>
+                <select value={layoutMode} onChange={(event) => {
+                  const nextLayout = event.target.value as "single" | "gaming_split";
+                  setLayoutMode(nextLayout);
+                  if (nextLayout === "gaming_split") setSmartReframe(false);
+                }}>
+                  <option value="single">Single reframed view</option>
+                  <option value="gaming_split">Gaming split-screen</option>
+                </select>
+              </label>
+              <label className="field"><span>Aspect fill</span>
+                <select value={backgroundFill} disabled={layoutMode === "gaming_split" || smartReframe} onChange={(event) => setBackgroundFill(event.target.value as "blur" | "crop" | "pad")}>
+                  <option value="blur">Blurred background</option>
+                  <option value="crop">Fill by cropping</option>
+                  <option value="pad">Fit with bars</option>
+                </select>
+              </label>
+              <label className="check-field">
+                <input type="checkbox" checked={smartReframe} disabled={layoutMode === "gaming_split"} onChange={(event) => setSmartReframe(event.target.checked)} />
+                <span>Track and center speaker (MediaPipe)</span>
+              </label>
+            </div>
+            {layoutMode === "gaming_split" && (
+              <>
+                <p className="muted small">Drag on the source preview to draw the active region; drag a box to move it. Gameplay appears above facecam.</p>
+                <div className="region-mode-buttons">
+                  <button type="button" className={`secondary-button ${activeRegion === "gameplay" ? "active" : ""}`} onClick={() => setActiveRegion("gameplay")}>Select gameplay region</button>
+                  <button type="button" className={`secondary-button ${activeRegion === "facecam" ? "active" : ""}`} onClick={() => setActiveRegion("facecam")}>Select facecam region</button>
+                </div>
+                <div className="layout-controls">
+                  <label className="field"><span>Saved layout</span>
+                    <select value={selectedPresetId} onChange={(event) => applyLayoutPreset(event.target.value)}>
+                      <option value="">Choose a preset</option>
+                      {layoutPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="field"><span>Preset name</span><input value={presetName} maxLength={80} onChange={(event) => setPresetName(event.target.value)} placeholder="My gaming layout" /></label>
+                  <button type="button" disabled={!presetName.trim()} onClick={() => void saveLayoutPreset()}>Save layout</button>
+                  <button type="button" className="secondary-button" disabled={!selectedPresetId} onClick={() => void deleteLayoutPreset()}>Delete preset</button>
+                </div>
+              </>
+            )}
+            {reframeError && <p className="error">{reframeError}</p>}
             <label className="field"><span>Frame rate</span>
               <select value={captionFps} onChange={(event) => setCaptionFps(Number(event.target.value))}>
                 <option value={30}>30 fps</option><option value={60}>60 fps</option>
@@ -887,6 +1708,43 @@ function ProjectPage() {
           </div>
           <div className="caption-preview-wrap">
             <p className="eyebrow">LIVE PREVIEW</p>
+            {video && layoutMode === "single" && (
+              <div className="output-preview single-preview" style={{ aspectRatio: `${previewWidth} / ${previewHeight}` }}>
+                <video
+                  ref={(element) => { previewVideoRefs.current[0] = element; }}
+                  src={videoUrl(video.file_url)}
+                  muted
+                  playsInline
+                  preload="metadata"
+                  style={{ objectPosition: `${previewFocus.x * 100}% ${previewFocus.y * 100}%` }}
+                />
+              </div>
+            )}
+            {video && layoutMode === "gaming_split" && (
+              <div className="output-preview split-preview" style={{ aspectRatio: `${previewWidth} / ${previewHeight}` }}>
+                <div className="split-preview-tile">
+                  <video
+                    ref={(element) => { previewVideoRefs.current[0] = element; }}
+                    src={videoUrl(video.file_url)}
+                    muted
+                    playsInline
+                    preload="metadata"
+                    style={regionPreviewStyle(gameplayRegion)}
+                  />
+                </div>
+                <div className="split-preview-tile">
+                  <video
+                    ref={(element) => { previewVideoRefs.current[1] = element; }}
+                    src={videoUrl(video.file_url)}
+                    muted
+                    playsInline
+                    preload="metadata"
+                    style={regionPreviewStyle(facecamRegion)}
+                  />
+                </div>
+              </div>
+            )}
+            <p className="muted small">Preview follows the source playhead and selected layout; the final export applies this crop, split-screen, or blurred fill.</p>
             <div className={`caption-preview caption-${captionPosition}`} style={{ fontFamily: fonts.find((font) => font.filename === captionFont)?.name ?? "Arial", fontSize: `clamp(16px, ${captionSize / 3}px, 40px)`, color: captionColor, textShadow: `0 2px ${Math.max(1, captionOutline)}px ${captionOutlineColor}` }}>
               <span className="preview-inactive">Make every</span> <strong>moment</strong> <span className="preview-inactive">count ✨</span>
             </div>
@@ -1022,6 +1880,7 @@ function JobCard({ job }: { job: Job }) {
     transcription: `Transcription${job.model ? ` · ${job.model}` : ""}`,
     export: "Captioned export",
     highlight_analysis: "Highlight analysis",
+    live_clip: "Live buffer clip",
   };
   return (
     <div className={`job-card ${isFailed ? "job-failed" : ""}`}>
@@ -1087,12 +1946,42 @@ function formatTime(seconds: number): string {
     : `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
+function getTrackFocus(
+  track: { time: number; x: number; y: number }[],
+  time: number,
+): { x: number; y: number } {
+  if (!track.length) return { x: 0.5, y: 0.5 };
+  if (time <= track[0].time) return track[0];
+  for (let index = 1; index < track.length; index += 1) {
+    const right = track[index];
+    if (time > right.time) continue;
+    const left = track[index - 1];
+    const span = right.time - left.time;
+    const factor = span > 0 ? (time - left.time) / span : 0;
+    return {
+      x: left.x + (right.x - left.x) * factor,
+      y: left.y + (right.y - left.y) * factor,
+    };
+  }
+  return track[track.length - 1];
+}
+
+function regionPreviewStyle(region: VideoRegion) {
+  return {
+    left: `${-(region.x / region.width) * 100}%`,
+    top: `${-(region.y / region.height) * 100}%`,
+    width: `${100 / region.width}%`,
+    height: `${100 / region.height}%`,
+  };
+}
+
 export default function App() {
   return (
     <div className="app min-h-screen">
       <Header />
       <Routes>
         <Route path="/" element={<HomePage />} />
+        <Route path="/live" element={<LivePage />} />
         <Route path="/projects/:projectId" element={<ProjectPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Routes>
