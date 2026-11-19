@@ -307,6 +307,7 @@ function IngestPanel({ projectId, onStarted, onUploaded }: IngestPanelProps) {
         <span className="upload-icon">↑</span>
         <strong>{uploadProgress === null ? "Drop a video here" : `Uploading ${uploadProgress}%`}</strong>
         <span className="muted small">MP4, MKV, MOV, WEBM, AVI · up to 10 GB</span>
+        <span className="muted small">Uploaded files are analyzed locally and clipped automatically—no source-site download.</span>
         {uploadProgress !== null && <span className="progress-track"><span style={{ width: `${uploadProgress}%` }} /></span>}
       </label>
       {error && <p className="error ingest-error">{error}</p>}
@@ -375,6 +376,7 @@ function LivePage() {
   const [audioThreshold, setAudioThreshold] = useState(-10);
   const [chatTrigger, setChatTrigger] = useState(false);
   const [chatThreshold, setChatThreshold] = useState(30);
+  const [autoClipChatSpikes, setAutoClipChatSpikes] = useState(true);
   const [clipSeconds, setClipSeconds] = useState(60);
   const [hotkey, setHotkey] = useState<AppPreferences["hotkey"]>("Ctrl+Alt+C");
   const [jobId, setJobId] = useState<string | null>(null);
@@ -449,6 +451,8 @@ function LivePage() {
           audio_peak_dbfs: audioThreshold,
           chat_trigger_enabled: chatTrigger,
           chat_messages_per_minute: chatThreshold,
+          auto_clip_chat_spikes: chatTrigger && autoClipChatSpikes,
+          auto_clip_seconds: clipSeconds,
         }),
       });
       setUrl("");
@@ -535,8 +539,10 @@ function LivePage() {
               <span>Chat messages per minute</span>
               <input type="number" min={1} max={10000} value={chatThreshold} onChange={(event) => setChatThreshold(Number(event.target.value))} disabled={!chatTrigger} />
             </label>
-            <button type="submit" disabled={!projectId || !url.trim()}>Start recording</button>
-            <p className="muted small live-note">Buffer cleanup removes the oldest completed segments to stay within the configured time and disk limits. Chat spikes use Twitch IRC or YouTube live chat; unsupported sites can still use loudness triggers.</p>
+            <label className="check-field"><input type="checkbox" checked={autoClipChatSpikes} onChange={(event) => setAutoClipChatSpikes(event.target.checked)} disabled={!chatTrigger} />Automatically create a {clipSeconds}s clip on each chat spike</label>
+            {chatTrigger && autoClipChatSpikes && clipSeconds > bufferMinutes * 60 && <p className="notice">Set the rolling buffer to at least {Math.ceil(clipSeconds / 60)} minutes to automatically create {clipSeconds}-second clips.</p>}
+            <button type="submit" disabled={!projectId || !url.trim() || (chatTrigger && autoClipChatSpikes && clipSeconds > bufferMinutes * 60)}>Start recording</button>
+            <p className="muted small live-note">Buffer cleanup removes the oldest completed segments to stay within the configured time and disk limits. Chat spikes use Twitch IRC or YouTube live chat; automatic chat clips are rate-limited to one per minute. Unsupported sites can still use loudness triggers.</p>
           </form>
         )}
       </section>

@@ -128,6 +128,8 @@ export type LiveRecording = {
   last_error: string | null;
   audio_trigger_enabled: boolean;
   chat_trigger_enabled: boolean;
+  auto_clip_chat_spikes: boolean;
+  auto_clip_seconds: number;
   started_at: string;
   ended_at: string | null;
 };

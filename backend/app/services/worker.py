@@ -23,6 +23,7 @@ from app.services.reframing import detect_face_track
 from app.services.transcription import transcribe_video
 from app.services.live_buffer import cut_last_n, list_buffer_segments
 from app.services.live_recording import reconcile_live_recordings
+from app.services.auto_clipping import queue_auto_highlight_analysis
 
 LOGGER = logging.getLogger("clipper.worker")
 TERMINAL_STATUSES = {"completed", "failed"}
@@ -75,6 +76,7 @@ def _process_download(job: dict[str, Any], payload: dict[str, Any]) -> None:
 
     metadata = probe_media(media_path)
     title = str(info.get("title") or media_path.stem)
+    video_id = str(uuid4())
     with connect() as connection:
         connection.execute(
             """
@@ -82,7 +84,7 @@ def _process_download(job: dict[str, Any], payload: dict[str, Any]) -> None:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                str(uuid4()),
+                video_id,
                 job["project_id"],
                 title,
                 payload["url"],
@@ -93,6 +95,7 @@ def _process_download(job: dict[str, Any], payload: dict[str, Any]) -> None:
                 metadata["fps"],
             ),
         )
+        queue_auto_highlight_analysis(connection, job["project_id"], video_id)
 
 
 def _process_clip(job: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -433,8 +436,8 @@ def _process_highlights(job: dict[str, Any], payload: dict[str, Any]) -> None:
             """
             INSERT INTO highlight_suggestions
                 (id, project_id, video_id, analysis_id, start_time, end_time, score,
-                 title, reason, signals, thumbnail_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 title, reason, signals, thumbnail_path, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -449,11 +452,35 @@ def _process_highlights(job: dict[str, Any], payload: dict[str, Any]) -> None:
                     suggestion["reason"],
                     json.dumps(suggestion["signals"]),
                     suggestion["thumbnail_path"],
+                    "accepted" if payload.get("auto_create_clips") else "suggested",
                 )
                 for suggestion in suggestions
             ],
         )
-    update_job(job["id"], progress=100, message=f"Found {len(suggestions)} highlight suggestions")
+        if payload.get("auto_create_clips"):
+            for suggestion in suggestions:
+                clip_payload = {
+                    "video_id": payload["video_id"],
+                    "start_time": suggestion["start_time"],
+                    "end_time": suggestion["end_time"],
+                    "mode": "accurate",
+                    "suggestion_id": suggestion["id"],
+                    "title": suggestion["title"],
+                    "ollama_model": result["settings"].get("ollama_model", ""),
+                }
+                connection.execute(
+                    "INSERT INTO jobs (id, project_id, kind, status, message, payload) "
+                    "VALUES (?, ?, 'clip', 'queued', 'Automatically creating highlight clip', ?)",
+                    (
+                        str(uuid4()),
+                        job["project_id"],
+                        json.dumps(clip_payload),
+                    ),
+                )
+    message = f"Found {len(suggestions)} highlight suggestions"
+    if payload.get("auto_create_clips"):
+        message += f"; queued {len(suggestions)} clips"
+    update_job(job["id"], progress=100, message=message)
 
 
 def _process_live_clip(job: dict[str, Any], payload: dict[str, Any]) -> None:

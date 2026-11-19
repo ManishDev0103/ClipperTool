@@ -28,6 +28,16 @@ class LiveRecordingCreate(BaseModel):
     audio_peak_dbfs: float = Field(default=-10, ge=-60, le=0)
     chat_trigger_enabled: bool = False
     chat_messages_per_minute: int = Field(default=30, ge=1, le=10000)
+    auto_clip_chat_spikes: bool = False
+    auto_clip_seconds: int = Field(default=60, ge=1, le=600)
+
+    @model_validator(mode="after")
+    def validate_auto_clip_buffer(self) -> "LiveRecordingCreate":
+        if self.auto_clip_chat_spikes and self.auto_clip_seconds > self.buffer_minutes * 60:
+            raise ValueError("Automatic clip length cannot exceed the rolling buffer duration.")
+        if self.auto_clip_chat_spikes and not self.chat_trigger_enabled:
+            raise ValueError("Enable live chat triggers before enabling automatic chat clips.")
+        return self
 
 
 class LiveClipCreate(BaseModel):

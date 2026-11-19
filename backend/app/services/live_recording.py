@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import sqlite3
@@ -56,18 +57,36 @@ def _stop_requested(recording_id: str) -> bool:
     return current is None or current["status"] in {"stopping", "stopped"}
 
 
-def _add_candidate(recording_id: str, reason: str) -> None:
+def _add_candidate(recording_id: str, reason: str, auto_clip_chat: bool = False) -> None:
     with connect() as connection:
         recording = connection.execute(
-            "SELECT project_id FROM live_recordings WHERE id = ?",
+            "SELECT project_id, auto_clip_chat_spikes, auto_clip_seconds "
+            "FROM live_recordings WHERE id = ?",
             (recording_id,),
         ).fetchone()
         if recording is None:
             return
+        candidate_id = str(uuid4())
         connection.execute(
             "INSERT INTO live_candidates (id, recording_id, project_id, reason) VALUES (?, ?, ?, ?)",
-            (str(uuid4()), recording_id, recording["project_id"], reason),
+            (candidate_id, recording_id, recording["project_id"], reason),
         )
+        if auto_clip_chat and recording["auto_clip_chat_spikes"]:
+            candidate = connection.execute(
+                "SELECT trigger_at FROM live_candidates WHERE id = ?",
+                (candidate_id,),
+            ).fetchone()
+            payload = {
+                "recording_id": recording_id,
+                "seconds": int(recording["auto_clip_seconds"]),
+                "candidate_id": candidate_id,
+                "candidate_at": candidate["trigger_at"],
+            }
+            connection.execute(
+                "INSERT INTO jobs (id, project_id, kind, status, message, payload) "
+                "VALUES (?, ?, 'live_clip', 'queued', 'Automatically clipping live chat spike', ?)",
+                (str(uuid4()), recording["project_id"], json.dumps(payload)),
+            )
 
 
 def _twitch_channel(source_url: str) -> str | None:
@@ -117,6 +136,7 @@ def _watch_youtube_chat(recording_id: str, source_url: str, stop_event: threadin
                 _add_candidate(
                     recording_id,
                     f"YouTube live chat activity spike ({len(message_times)} messages in 60 seconds)",
+                    auto_clip_chat=True,
                 )
                 last_candidate = now
             stop_event.wait(1)
@@ -162,6 +182,7 @@ def _watch_twitch_chat(recording_id: str, source_url: str, stop_event: threading
                                 _add_candidate(
                                     recording_id,
                                     f"Twitch chat activity spike ({len(message_times)} messages in 60 seconds)",
+                                    auto_clip_chat=True,
                                 )
                                 last_candidate = now
         except OSError as exc:

@@ -12,6 +12,7 @@ import app.routes.maintenance as maintenance_routes
 import app.routes.projects as project_routes
 import app.routes.settings as settings_routes
 import app.routes.transcriptions as transcription_routes
+import app.routes.uploads as uploads_routes
 import app.services.worker as worker
 from app.schemas import SettingsUpdate, TranscriptionCreate
 
@@ -23,6 +24,7 @@ def phase_six_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(maintenance_routes, "DATA_DIR", tmp_path)
     monkeypatch.setattr(project_routes, "DATA_DIR", tmp_path)
     monkeypatch.setattr(settings_routes, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(uploads_routes, "DATA_DIR", tmp_path)
     monkeypatch.setattr(worker, "DATA_DIR", tmp_path)
     db.initialize_db()
     with db.connect() as connection:
@@ -37,6 +39,141 @@ def _insert_video(video_id: str = "video") -> None:
             "VALUES (?, 'project', 'Video', 'video.mp4', 60)",
             (video_id,),
         )
+
+
+def test_download_automatically_queues_highlight_analysis(
+    phase_six_data: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id = str(uuid4())
+    source = phase_six_data / "source.webm"
+    source.write_bytes(b"video")
+    with db.connect() as connection:
+        connection.execute(
+            "INSERT INTO jobs (id, project_id, kind, status, payload) "
+            "VALUES (?, 'project', 'download', 'running', ?)",
+            (job_id, json.dumps({"url": "https://youtube.com/watch?v=test", "quality": "best"})),
+        )
+    monkeypatch.setattr(
+        worker,
+        "download_video",
+        lambda *_args: (source, {"title": "Downloaded video"}),
+    )
+    monkeypatch.setattr(
+        worker,
+        "probe_media",
+        lambda _path: {"duration": 120, "width": 1920, "height": 1080, "fps": 30},
+    )
+
+    worker._process_download(
+        {"id": job_id, "project_id": "project"},
+        {"url": "https://youtube.com/watch?v=test", "quality": "best"},
+    )
+
+    with db.connect() as connection:
+        video = connection.execute("SELECT id FROM videos WHERE project_id = 'project'").fetchone()
+        analysis_job = connection.execute(
+            "SELECT payload FROM jobs WHERE kind = 'highlight_analysis' AND project_id = 'project'"
+        ).fetchone()
+    payload = json.loads(analysis_job["payload"])
+    assert payload["video_id"] == video["id"]
+    assert payload["auto_create_clips"] is True
+    assert payload["settings"]["number_of_clips"] == 8
+
+
+def test_completed_upload_automatically_queues_highlight_analysis(
+    phase_six_data: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upload_id = str(uuid4())
+    upload_path = phase_six_data / "uploads" / f"{upload_id}.part"
+    upload_path.parent.mkdir(parents=True, exist_ok=True)
+    upload_path.write_bytes(b"uploaded video")
+    with db.connect() as connection:
+        connection.execute(
+            "INSERT INTO uploads (id, project_id, filename, total_size, received_size, temp_path) "
+            "VALUES (?, 'project', 'uploaded.mp4', 14, 14, ?)",
+            (upload_id, str(upload_path)),
+        )
+    monkeypatch.setattr(
+        uploads_routes,
+        "probe_media",
+        lambda _path: {"duration": 120, "width": 1920, "height": 1080, "fps": 30},
+    )
+
+    result = uploads_routes.complete_upload(upload_id)
+
+    with db.connect() as connection:
+        analysis_job = connection.execute(
+            "SELECT payload FROM jobs WHERE kind = 'highlight_analysis' AND project_id = 'project'"
+        ).fetchone()
+        video = connection.execute(
+            "SELECT file_path FROM videos WHERE id = ?",
+            (result["video"]["id"],),
+        ).fetchone()
+    payload = json.loads(analysis_job["payload"])
+    assert payload["video_id"] == result["video"]["id"]
+    assert payload["auto_create_clips"] is True
+    assert Path(video["file_path"]).is_file()
+    assert not upload_path.exists()
+
+
+def test_automatic_highlight_analysis_queues_clip_jobs(
+    phase_six_data: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _insert_video()
+    job_id = str(uuid4())
+    with db.connect() as connection:
+        connection.execute(
+            "INSERT INTO jobs (id, project_id, kind, status, payload) "
+            "VALUES (?, 'project', 'highlight_analysis', 'running', '{}')",
+            (job_id,),
+        )
+    suggestion = {
+        "start_time": 10.0,
+        "end_time": 40.0,
+        "score": 85.0,
+        "title": "A highlight",
+        "reason": "Strong signals.",
+        "signals": {"audio": 0.9},
+    }
+    monkeypatch.setattr(
+        worker,
+        "analyze_video_highlights",
+        lambda *_args: {
+            "suggestions": [dict(suggestion)],
+            "warnings": [],
+            "analysis_mode": "local_heuristics",
+            "settings": {"ollama_model": ""},
+        },
+    )
+
+    def create_thumbnail(_video_path: Path, thumbnail_path: Path, _timestamp: float) -> None:
+        thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+        thumbnail_path.write_bytes(b"jpeg")
+
+    monkeypatch.setattr(worker, "create_thumbnail", create_thumbnail)
+
+    worker._process_highlights(
+        {"id": job_id, "project_id": "project"},
+        {"video_id": "video", "settings": {}, "auto_create_clips": True},
+    )
+
+    with db.connect() as connection:
+        clip_job = connection.execute(
+            "SELECT payload FROM jobs WHERE kind = 'clip' AND project_id = 'project'"
+        ).fetchone()
+        stored_suggestion = connection.execute(
+            "SELECT status FROM highlight_suggestions"
+        ).fetchone()
+        job_message = connection.execute("SELECT message FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    clip_payload = json.loads(clip_job["payload"])
+    assert clip_payload["video_id"] == "video"
+    assert clip_payload["start_time"] == suggestion["start_time"]
+    assert clip_payload["suggestion_id"]
+    assert stored_suggestion["status"] == "accepted"
+    assert "queued 1 clips" in job_message["message"]
 
 
 def test_application_settings_are_persisted(phase_six_data: Path) -> None:

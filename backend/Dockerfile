@@ -6,7 +6,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --timeout 300 --retries 10 --no-cache-dir -r requirements.txt
 RUN ffmpeg -version >/dev/null \
     && streamlink --version >/dev/null \
     && python -c "import cv2, mediapipe as mp, pytchat, streamlink; detector = mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5); detector.close(); print('FFmpeg, Streamlink, pytchat and MediaPipe smoke check passed:', cv2.__version__, mp.__version__)"

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from app.config import DATA_DIR, MAX_UPLOAD_BYTES, MAX_UPLOAD_CHUNK_BYTES
 from app.db import connect
 from app.schemas import UploadCreate
+from app.services.auto_clipping import queue_auto_highlight_analysis
 from app.services.media import MediaProbeError, probe_media
 
 router = APIRouter(prefix="/api", tags=["uploads"])
@@ -137,6 +138,7 @@ def complete_upload(upload_id: str) -> dict:
             ),
         )
         connection.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
+        queue_auto_highlight_analysis(connection, upload["project_id"], video_id)
     return {
         "video": {
             "id": video_id,

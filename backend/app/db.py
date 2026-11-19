@@ -163,6 +163,8 @@ def initialize_db() -> None:
                 audio_peak_dbfs REAL NOT NULL DEFAULT -10,
                 chat_trigger_enabled INTEGER NOT NULL DEFAULT 0,
                 chat_messages_per_minute INTEGER NOT NULL DEFAULT 30,
+                auto_clip_chat_spikes INTEGER NOT NULL DEFAULT 0,
+                auto_clip_seconds INTEGER NOT NULL DEFAULT 60,
                 reconnect_count INTEGER NOT NULL DEFAULT 0,
                 buffer_size_bytes INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT,
@@ -184,6 +186,18 @@ def initialize_db() -> None:
                 ON live_candidates(project_id, created_at DESC);
             """
         )
+        live_recording_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(live_recordings)")
+        }
+        if "auto_clip_chat_spikes" not in live_recording_columns:
+            connection.execute(
+                "ALTER TABLE live_recordings "
+                "ADD COLUMN auto_clip_chat_spikes INTEGER NOT NULL DEFAULT 0"
+            )
+        if "auto_clip_seconds" not in live_recording_columns:
+            connection.execute(
+                "ALTER TABLE live_recordings ADD COLUMN auto_clip_seconds INTEGER NOT NULL DEFAULT 60"
+            )
 
 
 def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

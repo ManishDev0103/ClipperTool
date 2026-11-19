@@ -6,6 +6,7 @@ import pytest
 import app.config as config
 import app.db as db
 import app.routes.live as live_routes
+import app.services.live_recording as live_recording
 import app.services.worker as worker
 from app.schemas import LiveClipCreate, LiveRecordingCreate
 
@@ -57,6 +58,43 @@ def test_live_recording_creation_and_clip_request_queue_job(
         "candidate_id": None,
         "candidate_at": None,
     }
+
+
+def test_chat_spike_automatically_queues_configured_live_clip(
+    live_database: tuple[str, Path],
+) -> None:
+    project_id, _data_dir = live_database
+    result = live_routes.start_live_recording(
+        project_id,
+        LiveRecordingCreate(
+            url="https://www.youtube.com/watch?v=example",
+            buffer_minutes=3,
+            chat_trigger_enabled=True,
+            auto_clip_chat_spikes=True,
+            auto_clip_seconds=90,
+        ),
+    )
+    live_recording._add_candidate(
+        result["recording_id"],
+        "YouTube live chat activity spike",
+        auto_clip_chat=True,
+    )
+
+    with db.connect() as connection:
+        candidate = connection.execute(
+            "SELECT id, trigger_at FROM live_candidates WHERE recording_id = ?",
+            (result["recording_id"],),
+        ).fetchone()
+        job = connection.execute(
+            "SELECT kind, payload FROM jobs WHERE kind = 'live_clip'"
+        ).fetchone()
+    payload = json.loads(job["payload"])
+
+    assert job["kind"] == "live_clip"
+    assert payload["recording_id"] == result["recording_id"]
+    assert payload["seconds"] == 90
+    assert payload["candidate_id"] == candidate["id"]
+    assert payload["candidate_at"] == candidate["trigger_at"]
 
 
 def test_live_clip_worker_creates_editable_video_and_links_candidate(

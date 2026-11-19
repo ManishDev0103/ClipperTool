@@ -18,6 +18,7 @@ def _recording_response(recording: dict) -> dict:
     recording["buffered_seconds"] = round(sum(segment.duration for segment in segments), 1)
     recording["audio_trigger_enabled"] = bool(recording["audio_trigger_enabled"])
     recording["chat_trigger_enabled"] = bool(recording["chat_trigger_enabled"])
+    recording["auto_clip_chat_spikes"] = bool(recording["auto_clip_chat_spikes"])
     return recording
 
 
@@ -94,8 +95,9 @@ def start_live_recording(project_id: str, request: LiveRecordingCreate) -> dict:
             INSERT INTO live_recordings
                 (id, project_id, source_url, status, buffer_seconds, disk_cap_bytes,
                  segment_dir, audio_trigger_enabled, audio_peak_dbfs,
-                 chat_trigger_enabled, chat_messages_per_minute)
-            VALUES (?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?)
+                 chat_trigger_enabled, chat_messages_per_minute,
+                 auto_clip_chat_spikes, auto_clip_seconds)
+            VALUES (?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 recording_id,
@@ -108,6 +110,8 @@ def start_live_recording(project_id: str, request: LiveRecordingCreate) -> dict:
                 request.audio_peak_dbfs,
                 int(request.chat_trigger_enabled),
                 request.chat_messages_per_minute,
+                int(request.auto_clip_chat_spikes),
+                request.auto_clip_seconds,
             ),
         )
     return {"recording_id": recording_id, "status": "starting"}
