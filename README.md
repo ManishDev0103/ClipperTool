@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Local Clipper
 
 A local-first video clipping app for Windows 10/11. It imports videos from URLs handled by yt-dlp or from local files, probes media with ffprobe, cuts clips with ffmpeg, and stores project data on your machine. It does not require cloud accounts or paid APIs.
@@ -140,3 +141,6 @@ curl.exe http://127.0.0.1:8000/api/health
 ```
 
 Caption tests verify word timing, ASS karaoke generation, preset validation, and SRT timestamps. Highlight tests cover weighted scoring, ranking, duration bounds, and overlap behavior. Cutting tests mock ffmpeg, so unit tests do not need media fixtures. To verify the complete flow end to end, upload a video with clear speech and visual changes, generate/edit its transcript, run highlight analysis, create a suggested clip, export captions, and download the MP4/SRT and metadata sidecars.
+=======
+# ClipperTool
+>>>>>>> 27ceb9cd836e57dc8da957a3c38a71bc93656e8d
