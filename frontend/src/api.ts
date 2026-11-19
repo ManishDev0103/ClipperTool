@@ -91,16 +91,28 @@ export type ProjectDetail = {
   videos: Video[];
   clips: Clip[];
   exports: ExportedClip[];
+  batch_exports: { id: string; file_url: string; created_at: string }[];
 };
 
 export type Job = {
   id: string;
-  kind: "download" | "clip" | "transcription" | "export" | "highlight_analysis" | "live_clip";
+  kind: "download" | "clip" | "transcription" | "export" | "batch_export" | "highlight_analysis" | "live_clip";
   model?: string;
   status: "queued" | "running" | "completed" | "failed";
   progress: number;
   message: string;
   error: string | null;
+};
+
+export type AppPreferences = {
+  default_whisper_model: "tiny" | "base" | "small" | "medium" | "large-v3";
+  ollama_model: string;
+  gpu_enabled: boolean;
+  default_caption_preset: "bold_yellow" | "minimal_white" | "boxed" | "glow";
+  default_aspect_ratio: "9:16" | "1:1" | "4:5" | "16:9";
+  default_clip_length: number;
+  default_buffer_minutes: number;
+  hotkey: "Ctrl+Alt+C" | "Ctrl+Alt+X" | "Ctrl+Shift+C";
 };
 
 export type LiveRecording = {

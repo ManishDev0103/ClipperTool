@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -173,8 +174,17 @@ def _process_transcription(job: dict[str, Any], payload: dict[str, Any]) -> None
             "SELECT file_path, duration FROM videos WHERE id = ? AND project_id = ?",
             (payload["video_id"], job["project_id"]),
         ).fetchone()
+        existing = connection.execute(
+            "SELECT t.model, COUNT(w.word_index) AS word_count "
+            "FROM transcripts t LEFT JOIN transcript_words w ON w.video_id = t.video_id "
+            "WHERE t.video_id = ? GROUP BY t.model",
+            (payload["video_id"],),
+        ).fetchone()
     if video is None:
         raise RuntimeError("The source video no longer exists in this project.")
+    if existing is not None and existing["model"] == payload["model"] and existing["word_count"] > 0:
+        update_job(job["id"], progress=100, message="Reused the existing transcript")
+        return
 
     def progress(percent: float, message: str) -> None:
         update_job(job["id"], progress=percent, message=message)
@@ -210,7 +220,13 @@ def _process_transcription(job: dict[str, Any], payload: dict[str, Any]) -> None
     update_job(job["id"], progress=100, message=f"Transcript ready ({len(words)} words)")
 
 
-def _process_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
+def _process_export(
+    job: dict[str, Any],
+    payload: dict[str, Any],
+    progress_range: tuple[float, float] = (0, 100),
+    progress_label: str = "",
+) -> Path:
+    settings = payload["settings"]
     with connect() as connection:
         clip = connection.execute(
             """
@@ -232,10 +248,22 @@ def _process_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
             """,
             (clip["source_video_id"], clip["start_time"], clip["end_time"]),
         ).fetchall() if clip is not None else []
+        intro = connection.execute(
+            "SELECT file_path FROM clips WHERE id = ? AND project_id = ?",
+            (settings.get("intro_clip_id"), job["project_id"]),
+        ).fetchone() if settings.get("intro_clip_id") else None
+        outro = connection.execute(
+            "SELECT file_path FROM clips WHERE id = ? AND project_id = ?",
+            (settings.get("outro_clip_id"), job["project_id"]),
+        ).fetchone() if settings.get("outro_clip_id") else None
     if clip is None:
         raise RuntimeError("The source clip no longer exists in this project.")
     if transcript is None or not rows:
         raise RuntimeError("Transcribe this video's audio before exporting captions.")
+    if settings.get("intro_clip_id") and intro is None:
+        raise RuntimeError("The selected intro clip no longer exists in this project.")
+    if settings.get("outro_clip_id") and outro is None:
+        raise RuntimeError("The selected outro clip no longer exists in this project.")
 
     duration = float(clip["end_time"]) - float(clip["start_time"])
     words = [
@@ -246,7 +274,6 @@ def _process_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
         }
         for row in rows
     ]
-    settings = payload["settings"]
     font_path: Path | None = None
     font_file = settings.get("font_file")
     if font_file:
@@ -266,7 +293,10 @@ def _process_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
     )
 
     def progress(percent: float, message: str) -> None:
-        update_job(job["id"], progress=percent, message=message)
+        lower, upper = progress_range
+        scaled = lower + (upper - lower) * percent / 100
+        label = f"{progress_label} · {message}" if progress_label else message
+        update_job(job["id"], progress=scaled, message=label)
 
     face_track: list[dict[str, float]] | None = None
     source_dimensions: tuple[int, int] | None = None
@@ -280,6 +310,28 @@ def _process_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
             raise RuntimeError("Could not read the source dimensions needed for smart reframe.")
         source_dimensions = (int(source_width), int(source_height))
 
+    source_metadata = probe_media(Path(clip["file_path"]))
+    intro_path = Path(intro["file_path"]) if intro is not None else None
+    outro_path = Path(outro["file_path"]) if outro is not None else None
+    intro_metadata = probe_media(intro_path) if intro_path is not None else {}
+    outro_metadata = probe_media(outro_path) if outro_path is not None else {}
+    logo_path: Path | None = None
+    if settings.get("watermark_file"):
+        logo_name = Path(str(settings["watermark_file"]).replace("\\", "/")).name
+        if logo_name != settings["watermark_file"]:
+            raise RuntimeError("The selected logo filename is invalid.")
+        logo_path = DATA_DIR / "logos" / logo_name
+        if not logo_path.is_file():
+            raise RuntimeError(f"Selected logo is not available: {logo_name}")
+    music_path: Path | None = None
+    if settings.get("music_file"):
+        music_name = Path(str(settings["music_file"]).replace("\\", "/")).name
+        if music_name != settings["music_file"]:
+            raise RuntimeError("The selected music filename is invalid.")
+        music_path = DATA_DIR / "music" / music_name
+        if not music_path.is_file():
+            raise RuntimeError(f"Selected background music is not available: {music_name}")
+
     output_path, used_nvenc = export_captioned_clip(
         Path(clip["file_path"]),
         words,
@@ -290,6 +342,15 @@ def _process_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
         progress,
         face_track,
         source_dimensions,
+        intro_path,
+        float(intro_metadata.get("duration", 0)),
+        bool(intro_metadata.get("has_audio", False)),
+        outro_path,
+        float(outro_metadata.get("duration", 0)),
+        bool(outro_metadata.get("has_audio", False)),
+        bool(source_metadata.get("has_audio", True)),
+        logo_path,
+        music_path,
     )
     settings["encoder"] = "h264_nvenc" if used_nvenc else "libx264"
     with connect() as connection:
@@ -301,6 +362,7 @@ def _process_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
         sidecar = Path(clip["file_path"]).with_suffix(extension)
         if sidecar.is_file():
             shutil.copyfile(sidecar, output_path.with_suffix(extension))
+    return output_path
 
 
 def _process_highlights(job: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -447,6 +509,41 @@ def _process_live_clip(job: dict[str, Any], payload: dict[str, Any]) -> None:
     update_job(job["id"], progress=100, message=f"Ready to edit: {title}")
 
 
+def _process_batch_export(job: dict[str, Any], payload: dict[str, Any]) -> None:
+    clip_ids: list[str] = payload["clip_ids"]
+    total = len(clip_ids)
+    if not clip_ids:
+        raise RuntimeError("Select at least one clip for batch export.")
+    outputs: list[Path] = []
+    for index, clip_id in enumerate(clip_ids):
+        lower = index / total * 90
+        upper = (index + 1) / total * 90
+        output = _process_export(
+            job,
+            {"clip_id": clip_id, "settings": dict(payload["settings"])},
+            (lower, upper),
+            f"Export {index + 1}/{total}",
+        )
+        outputs.append(output)
+    batch_id = payload["batch_id"]
+    zip_path = DATA_DIR / "output" / "batches" / f"{batch_id}.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    update_job(job["id"], progress=95, message="Adding exports to a ZIP archive")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for output in outputs:
+            archive.write(output, arcname=output.name)
+            for extension in (".json", ".txt"):
+                sidecar = output.with_suffix(extension)
+                if sidecar.is_file():
+                    archive.write(sidecar, arcname=sidecar.name)
+    with connect() as connection:
+        connection.execute(
+            "INSERT INTO batch_exports (id, project_id, job_id, file_path) VALUES (?, ?, ?, ?)",
+            (batch_id, job["project_id"], job["id"], str(zip_path)),
+        )
+    update_job(job["id"], progress=100, message=f"Exported {total} clips and prepared ZIP")
+
+
 def process_next_job() -> bool:
     with connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -484,6 +581,8 @@ def process_next_job() -> bool:
             _process_highlights(job, payload)
         elif job["kind"] == "live_clip":
             _process_live_clip(job, payload)
+        elif job["kind"] == "batch_export":
+            _process_batch_export(job, payload)
         else:
             raise RuntimeError(f"Unsupported job type: {job['kind']}")
         update_job(job["id"], status="completed", progress=100, message="Complete", error=None)

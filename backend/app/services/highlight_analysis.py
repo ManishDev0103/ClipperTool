@@ -115,7 +115,7 @@ def create_thumbnail(video_path: Path, output_path: Path, timestamp: float) -> N
         "-vf",
         "scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2",
         "-q:v",
-        "4",
+        "6",
         str(output_path),
     ]
     try:

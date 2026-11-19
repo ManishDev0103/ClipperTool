@@ -1,5 +1,6 @@
 import pytest
 
+from app.services.highlight_analysis import create_thumbnail
 from app.services.highlights import score_signals, select_suggestions, transcript_events
 
 
@@ -118,3 +119,26 @@ def test_transcript_heuristics_find_questions_hooks_and_funny_moments() -> None:
     events = transcript_events(words)
 
     assert {event["category"] for event in events} == {"hook", "funny"}
+
+
+def test_suggestion_thumbnail_is_downscaled_and_jpeg_compressed(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import app.services.highlight_analysis as analysis
+
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "preview.jpg"
+    source.touch()
+    captured: list[str] = []
+
+    def fake_run(command, **_kwargs):
+        captured.extend(command)
+        output.write_bytes(b"jpeg")
+
+    monkeypatch.setattr(analysis.subprocess, "run", fake_run)
+    create_thumbnail(source, output, 3.5)
+
+    assert output.read_bytes() == b"jpeg"
+    assert "scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2" in captured
+    assert captured[captured.index("-q:v") + 1] == "6"

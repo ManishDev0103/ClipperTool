@@ -224,7 +224,10 @@ def _source_command(kind: str, source_url: str) -> list[str]:
 def _terminate_process(process: subprocess.Popen[bytes] | None) -> None:
     if process is None or process.poll() is not None:
         return
-    process.terminate()
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
@@ -323,7 +326,13 @@ def _capture_once(
                 _set_recording(recording_id, buffer_size_bytes=size_bytes)
                 last_scan = now
             time.sleep(0.25)
-        _terminate_process(ffmpeg)
+        if source.poll() is not None and ffmpeg.poll() is None and not _stop_requested(recording_id):
+                try:
+                    ffmpeg.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _terminate_process(ffmpeg)
+        else:
+                _terminate_process(ffmpeg)
         _terminate_process(source)
         ffmpeg_code = ffmpeg.returncode if ffmpeg.returncode is not None else -1
         source_code = source.returncode if source.returncode is not None else -1

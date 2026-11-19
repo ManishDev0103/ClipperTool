@@ -54,4 +54,8 @@ def probe_media(path: Path) -> dict[str, Any]:
         "width": video_stream.get("width"),
         "height": video_stream.get("height"),
         "fps": fps,
+        "has_audio": any(
+            stream.get("codec_type") == "audio"
+            for stream in metadata.get("streams", [])
+        ),
     }

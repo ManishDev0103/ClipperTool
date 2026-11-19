@@ -19,6 +19,18 @@ def queue_transcription(video_id: str, request: TranscriptionCreate) -> dict:
         ).fetchone()
         if video is None:
             raise HTTPException(status_code=404, detail="Video not found.")
+        existing = connection.execute(
+            "SELECT t.model, COUNT(w.word_index) AS word_count "
+            "FROM transcripts t LEFT JOIN transcript_words w ON w.video_id = t.video_id "
+            "WHERE t.video_id = ? GROUP BY t.model",
+            (video_id,),
+        ).fetchone()
+        if existing is not None and existing["model"] == request.model and existing["word_count"] > 0:
+            return {
+                "already_transcribed": True,
+                "model": existing["model"],
+                "message": "A transcript for this model is already available.",
+            }
         active = connection.execute(
             "SELECT id FROM jobs WHERE kind = 'transcription' AND status IN ('queued', 'running') "
             "AND payload LIKE ? ORDER BY created_at DESC LIMIT 1",
@@ -29,7 +41,11 @@ def queue_transcription(video_id: str, request: TranscriptionCreate) -> dict:
         connection.execute(
             "INSERT INTO jobs (id, project_id, kind, status, message, payload) "
             "VALUES (?, ?, 'transcription', 'queued', 'Waiting in transcription queue', ?)",
-            (job_id, video["project_id"], json.dumps(request.model_dump())),
+            (
+                job_id,
+                video["project_id"],
+                json.dumps({"video_id": video_id, **request.model_dump()}),
+            ),
         )
     return {"job_id": job_id, "status": "queued"}
 

@@ -8,10 +8,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   apiRequest,
   apiUrl,
+  AppPreferences,
   Clip,
   ExportedClip,
   HighlightAnalysis,
@@ -33,6 +34,7 @@ import WaveformTimeline, { TimelineSegment } from "./WaveformTimeline";
 const ACCEPTED_FILES = ".mp4,.mkv,.mov,.webm,.avi";
 const CHUNK_SIZE = 8 * 1024 * 1024;
 const MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024;
+const DEFAULT_DESCRIPTION = "A local-first video clipping tool. Import, edit, caption, and export your clips on your own machine.";
 type CaptionPreset = "bold_yellow" | "minimal_white" | "boxed" | "glow";
 type AspectRatio = "9:16" | "1:1" | "4:5" | "16:9";
 type RegionKind = "facecam" | "gameplay";
@@ -47,24 +49,52 @@ function defaultRegion(kind: RegionKind): VideoRegion {
     : { x: 0.02, y: 0.28, width: 0.96, height: 0.68 };
 }
 
+function usePageMetadata(title: string, description: string) {
+  useEffect(() => {
+    document.title = title;
+    let meta = document.querySelector<HTMLMetaElement>('meta[name="description"]');
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.name = "description";
+      document.head.appendChild(meta);
+    }
+    meta.content = description;
+  }, [title, description]);
+}
+
 function Header() {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
+  useEffect(() => setMenuOpen(false), [location.pathname]);
   return (
     <header className="topbar">
-      <Link to="/" className="brand">LOCAL CLIPPER</Link>
-      <nav>
-        <Link to="/">Projects</Link>
-        <Link to="/live">Live</Link>
-        <Link to="/settings">Settings</Link>
+      <Link to="/" className="brand" aria-label="Local Clipper home" onClick={() => setMenuOpen(false)}>LOCAL CLIPPER</Link>
+      <button
+        className="menu-toggle"
+        type="button"
+        aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"}
+        aria-expanded={menuOpen}
+        aria-controls="primary-navigation"
+        onClick={() => setMenuOpen((open) => !open)}
+      >
+        <span aria-hidden="true">{menuOpen ? "×" : "☰"}</span>
+      </button>
+      <nav id="primary-navigation" className={menuOpen ? "menu-open" : ""} aria-label="Primary navigation">
+        <Link to="/" onClick={() => setMenuOpen(false)}>Projects</Link>
+        <Link to="/live" onClick={() => setMenuOpen(false)}>Live</Link>
+        <Link to="/settings" onClick={() => setMenuOpen(false)}>Settings</Link>
       </nav>
     </header>
   );
 }
 
 function HomePage() {
+  usePageMetadata("Projects | Local Clipper", DEFAULT_DESCRIPTION);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [selectedProject, setSelectedProject] = useState("");
   const [projectName, setProjectName] = useState("");
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const navigate = useNavigate();
 
   const loadProjects = useCallback(async () => {
@@ -82,6 +112,7 @@ function HomePage() {
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setSuccess("");
     try {
       const project = await apiRequest<ProjectSummary>("/api/projects", {
         method: "POST",
@@ -91,6 +122,7 @@ function HomePage() {
       setProjectName("");
       setProjects((current) => [project, ...current]);
       setSelectedProject(project.id);
+      setSuccess(`Project “${project.name}” created.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not create project.");
     }
@@ -124,7 +156,6 @@ function HomePage() {
         ) : (
           <p className="notice">Create a project below before adding media.</p>
         )}
-        {error && <p className="error">{error}</p>}
       </section>
 
       <section className="panel">
@@ -135,13 +166,14 @@ function HomePage() {
         <form className="create-project" onSubmit={createProject}>
           <input
             aria-label="New project name"
-            placeholder="Name a project"
             maxLength={120}
             value={projectName}
             onChange={(event) => setProjectName(event.target.value)}
           />
           <button type="submit" disabled={!projectName.trim()}>Create project</button>
         </form>
+        {success && <p className="success" role="status">{success}</p>}
+        {error && <p className="error" role="alert">{error}</p>}
         {projects.length === 0 ? (
           <p className="muted empty-state">Your projects will appear here.</p>
         ) : (
@@ -248,7 +280,6 @@ function IngestPanel({ projectId, onStarted, onUploaded }: IngestPanelProps) {
           <span>Video link</span>
           <input
             type="url"
-            placeholder="https://…"
             value={url}
             onChange={(event) => setUrl(event.target.value)}
             required
@@ -332,6 +363,7 @@ function useJobProgress(jobId: string | null, onFinished: () => void) {
 }
 
 function LivePage() {
+  usePageMetadata("Live capture | Local Clipper", "Record local live-stream buffers, clip recent moments, and manage live recordings.");
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [projectId, setProjectId] = useState("");
   const [recordings, setRecordings] = useState<LiveRecording[]>([]);
@@ -344,6 +376,7 @@ function LivePage() {
   const [chatTrigger, setChatTrigger] = useState(false);
   const [chatThreshold, setChatThreshold] = useState(30);
   const [clipSeconds, setClipSeconds] = useState(60);
+  const [hotkey, setHotkey] = useState<AppPreferences["hotkey"]>("Ctrl+Alt+C");
   const [jobId, setJobId] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [error, setError] = useState("");
@@ -358,6 +391,18 @@ function LivePage() {
       })
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : "Could not load projects."),
+      );
+  }, []);
+
+  useEffect(() => {
+    apiRequest<{ preferences: AppPreferences }>("/api/settings")
+      .then(({ preferences }) => {
+        setBufferMinutes(preferences.default_buffer_minutes);
+        setClipSeconds(preferences.default_clip_length);
+        setHotkey(preferences.hotkey);
+      })
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : "Could not load live defaults."),
       );
   }, []);
 
@@ -470,7 +515,7 @@ function LivePage() {
           <form className="live-form" onSubmit={(event) => void startRecording(event)}>
             <label className="field live-url">
               <span>Live stream URL</span>
-              <input type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" />
+              <input type="url" required value={url} onChange={(event) => setUrl(event.target.value)} />
             </label>
             <label className="field">
               <span>Rolling buffer (minutes)</span>
@@ -560,8 +605,8 @@ function LivePage() {
       )}
       {job?.status === "failed" && job.error && <p className="error">{job.error}</p>}
       <section className="panel hotkey-panel">
-        <div><p className="eyebrow">WINDOWS HOTKEY</p><h2>Ctrl + Alt + C</h2></div>
-        <p className="muted small">Run <code>run_live_hotkey.bat</code> in a separate window to clip the most recently started active recording while another app is focused. Use <code>run_live_hotkey.bat --seconds 90</code> to change its duration.</p>
+        <div><p className="eyebrow">WINDOWS HOTKEY</p><h2>{hotkey.replace(/\+/g, " + ")}</h2></div>
+        <p className="muted small">Run <code>run_live_hotkey.bat</code> in a separate window to clip the most recently started active recording while another app is focused. The helper uses this setting and the default clip length; pass <code>--seconds 90</code> to override the duration.</p>
       </section>
     </main>
   );
@@ -569,10 +614,15 @@ function LivePage() {
 
 function ProjectPage() {
   const { projectId = "" } = useParams();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialJobId = searchParams.get("job");
   const [jobId, setJobId] = useState<string | null>(initialJobId);
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
+  usePageMetadata(
+    detail ? `${detail.project.name} | Local Clipper` : "Project | Local Clipper",
+    "Edit video segments, manage transcripts, discover highlights, and export captioned clips locally.",
+  );
   const [selectedVideoId, setSelectedVideoId] = useState("");
   const [startTime, setStartTime] = useState("0");
   const [endTime, setEndTime] = useState("");
@@ -590,6 +640,7 @@ function ProjectPage() {
   const [editingWord, setEditingWord] = useState<number | null>(null);
   const [playbackTime, setPlaybackTime] = useState(0);
   const [captionClipId, setCaptionClipId] = useState("");
+  const [selectedBatchClipIds, setSelectedBatchClipIds] = useState<string[]>([]);
   const [captionPreset, setCaptionPreset] = useState<CaptionPreset>("bold_yellow");
   const [captionColor, setCaptionColor] = useState("#FFD84D");
   const [captionOutlineColor, setCaptionOutlineColor] = useState("#111111");
@@ -619,8 +670,26 @@ function ProjectPage() {
   const [reframeError, setReframeError] = useState("");
   const [fonts, setFonts] = useState<{ filename: string; name: string }[]>([]);
   const [captionFont, setCaptionFont] = useState("");
+  const [watermarkFile, setWatermarkFile] = useState("");
+  const [watermarkPosition, setWatermarkPosition] = useState("bottom_right");
+  const [watermarkSize, setWatermarkSize] = useState(15);
+  const [watermarkOpacity, setWatermarkOpacity] = useState(0.8);
+  const [progressBar, setProgressBar] = useState(false);
+  const [introClipId, setIntroClipId] = useState("");
+  const [outroClipId, setOutroClipId] = useState("");
+  const [musicFile, setMusicFile] = useState("");
+  const [sourceVolume, setSourceVolume] = useState(1);
+  const [musicVolume, setMusicVolume] = useState(0.2);
+  const [autoDuck, setAutoDuck] = useState(true);
+  const [autoZoom, setAutoZoom] = useState(false);
+  const [zoomStrength, setZoomStrength] = useState(0.12);
+  const [useGpu, setUseGpu] = useState(true);
+  const [appPreferences, setAppPreferences] = useState<AppPreferences | null>(null);
+  const [logos, setLogos] = useState<{ filename: string }[]>([]);
+  const [musicAssets, setMusicAssets] = useState<{ filename: string }[]>([]);
   const [exportError, setExportError] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [deletingProject, setDeletingProject] = useState(false);
   const [highlightAnalysis, setHighlightAnalysis] = useState<HighlightAnalysis | null>(null);
   const [highlightError, setHighlightError] = useState("");
   const [highlightMinDuration, setHighlightMinDuration] = useState(20);
@@ -715,6 +784,43 @@ function ProjectPage() {
   }, []);
 
   useEffect(() => {
+    apiRequest<{ logos: { filename: string }[]; music: { filename: string }[] }>("/api/assets")
+      .then((assets) => {
+        setLogos(assets.logos);
+        setMusicAssets(assets.music);
+      })
+      .catch((reason: unknown) =>
+        setExportError(reason instanceof Error ? reason.message : "Could not load branding and music assets."),
+      );
+  }, []);
+
+  useEffect(() => {
+    apiRequest<{ preferences: AppPreferences }>("/api/settings")
+      .then(({ preferences }) => {
+        setAppPreferences(preferences);
+        setCaptionPreset(preferences.default_caption_preset);
+        setCaptionColor(preferences.default_caption_preset === "bold_yellow" ? "#FFD84D" : "#FFFFFF");
+        setCaptionOutlineColor(preferences.default_caption_preset === "glow" ? "#FFD84D" : "#111111");
+        setAspectRatio(preferences.default_aspect_ratio);
+        setUseGpu(preferences.gpu_enabled);
+        setTranscriptModel(preferences.default_whisper_model);
+        setOllamaModel(preferences.ollama_model);
+      })
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : "Could not load application preferences."),
+      );
+  }, []);
+
+  useEffect(() => {
+    if (!appPreferences || !video || segments.length !== 1) return;
+    const defaultEnd = Math.min(video.duration, 30);
+    if (segments[0].start_time !== 0 || segments[0].end_time !== defaultEnd) return;
+    const end = Math.min(video.duration, appPreferences.default_clip_length);
+    setEndTime(String(end));
+    setSegments((current) => current.map((segment) => ({ ...segment, end_time: end })));
+  }, [appPreferences, video?.id, segments]);
+
+  useEffect(() => {
     apiRequest<LayoutPreset[]>(`/api/projects/${projectId}/layout-presets`)
       .then(setLayoutPresets)
       .catch((reason: unknown) =>
@@ -767,18 +873,33 @@ function ProjectPage() {
   const activeTranscriptIndex = transcript?.words.findIndex(
     (word) => playbackTime >= word.start_time && playbackTime <= word.end_time,
   ) ?? -1;
+  const activeTranscriptWord = activeTranscriptIndex >= 0 ? transcript?.words[activeTranscriptIndex] : undefined;
+  const captionPreviewWords = captionClip
+    && transcript?.video_id === captionClip.video_id
+    && activeTranscriptWord
+    && activeTranscriptWord.start_time >= captionClip.start_time
+    && activeTranscriptWord.start_time < captionClip.end_time
+    ? transcript.words
+      .slice(Math.max(0, activeTranscriptIndex - 2), activeTranscriptIndex + 5)
+      .filter((word) => word.end_time > captionClip.start_time && word.start_time < captionClip.end_time)
+    : [];
 
   async function generateTranscript() {
     if (!video) return;
     setTranscriptError("");
     setTranscriptMessage("");
     try {
-      const result = await apiRequest<{ job_id: string }>(`/api/videos/${video.id}/transcriptions`, {
+      const result = await apiRequest<{ job_id?: string; already_transcribed?: boolean; message?: string }>(`/api/videos/${video.id}/transcriptions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: transcriptModel, device: transcriptDevice }),
       });
-      setJobId(result.job_id);
+      if (result.already_transcribed) {
+        setTranscriptMessage(result.message ?? "Reused the existing transcript.");
+        setRefresh((value) => value + 1);
+      } else if (result.job_id) {
+        setJobId(result.job_id);
+      }
     } catch (reason) {
       setTranscriptError(reason instanceof Error ? reason.message : "Could not queue transcription.");
     }
@@ -894,6 +1015,70 @@ function ProjectPage() {
     }
   }
 
+  async function uploadBrandAsset(
+    event: ChangeEvent<HTMLInputElement>,
+    kind: "logos" | "music",
+  ) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setExportError("");
+    try {
+      const uploaded = await apiRequest<{ filename: string }>(
+        `/api/assets/${kind}?filename=${encodeURIComponent(file.name)}`,
+        { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file },
+      );
+      if (kind === "logos") {
+        setLogos((current) => [...current.filter((item) => item.filename !== uploaded.filename), uploaded]);
+        setWatermarkFile(uploaded.filename);
+      } else {
+        setMusicAssets((current) => [...current.filter((item) => item.filename !== uploaded.filename), uploaded]);
+        setMusicFile(uploaded.filename);
+      }
+    } catch (reason) {
+      setExportError(reason instanceof Error ? reason.message : "Could not upload this asset.");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  function getExportSettings() {
+    const [width, height] = outputDimensions[aspectRatio];
+    return {
+      preset: captionPreset,
+      font_name: fonts.find((font) => font.filename === captionFont)?.name ?? "Arial",
+      font_file: captionFont || null,
+      font_size: captionSize,
+      color: captionColor,
+      outline_color: captionOutlineColor,
+      outline: captionOutline,
+      position: captionPosition,
+      bitrate: captionBitrate,
+      fps: captionFps,
+      width,
+      height,
+      aspect_ratio: aspectRatio,
+      smart_reframe: smartReframe,
+      background_fill: backgroundFill,
+      layout: layoutMode,
+      facecam_region: facecamRegion,
+      gameplay_region: gameplayRegion,
+      watermark_file: watermarkFile || null,
+      watermark_position: watermarkPosition,
+      watermark_size: watermarkSize,
+      watermark_opacity: watermarkOpacity,
+      progress_bar: progressBar,
+      intro_clip_id: introClipId || null,
+      outro_clip_id: outroClipId || null,
+      music_file: musicFile || null,
+      source_volume: sourceVolume,
+      music_volume: musicVolume,
+      auto_duck: autoDuck,
+      auto_zoom: autoZoom,
+      zoom_strength: zoomStrength,
+      use_gpu: useGpu,
+    };
+  }
+
   async function exportCaptionedClip(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setExportError("");
@@ -903,36 +1088,51 @@ function ProjectPage() {
     }
     setExporting(true);
     try {
-      const [width, height] = outputDimensions[aspectRatio];
       const result = await apiRequest<{ job_id: string }>(`/api/clips/${captionClipId}/exports`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          preset: captionPreset,
-          font_name: fonts.find((font) => font.filename === captionFont)?.name ?? "Arial",
-          font_file: captionFont || null,
-          font_size: captionSize,
-          color: captionColor,
-          outline_color: captionOutlineColor,
-          outline: captionOutline,
-          position: captionPosition,
-          bitrate: captionBitrate,
-          fps: captionFps,
-          width,
-          height,
-          aspect_ratio: aspectRatio,
-          smart_reframe: smartReframe,
-          background_fill: backgroundFill,
-          layout: layoutMode,
-          facecam_region: facecamRegion,
-          gameplay_region: gameplayRegion,
-        }),
+        body: JSON.stringify(getExportSettings()),
       });
       setJobId(result.job_id);
     } catch (reason) {
       setExportError(reason instanceof Error ? reason.message : "Could not queue caption export.");
     } finally {
       setExporting(false);
+    }
+  }
+
+  async function exportSelectedBatch() {
+    if (!selectedBatchClipIds.length) return;
+    setExportError("");
+    setExporting(true);
+    try {
+      const result = await apiRequest<{ job_id: string }>(`/api/projects/${projectId}/exports/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clip_ids: selectedBatchClipIds, settings: getExportSettings() }),
+      });
+      setJobId(result.job_id);
+      setRefresh((value) => value + 1);
+    } catch (reason) {
+      setExportError(reason instanceof Error ? reason.message : "Could not queue batch export.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function deleteProject() {
+    if (!window.confirm(`Delete “${detail?.project.name}” and its local media? This cannot be undone.`)) return;
+    setDeletingProject(true);
+    try {
+      const result = await apiRequest<{ cleanup_warnings: string[] }>(`/api/projects/${projectId}`, { method: "DELETE" });
+      if (result.cleanup_warnings.length) {
+        window.alert(`Project was deleted, but some files could not be removed: ${result.cleanup_warnings.join(", ")}`);
+      }
+      navigate("/");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not delete project.");
+    } finally {
+      setDeletingProject(false);
     }
   }
 
@@ -1257,7 +1457,12 @@ function ProjectPage() {
     <main className="page-shell">
       <div className="page-title-row">
         <div><Link to="/" className="back-link">← All projects</Link><h1>{detail.project.name}</h1></div>
-        {job && <JobCard job={job} />}
+        <div className="project-header-actions">
+          {job && <JobCard job={job} />}
+          <button type="button" className="secondary-button" disabled={deletingProject || (!!job && ["queued", "running"].includes(job.status))} onClick={() => void deleteProject()}>
+            {deletingProject ? "Deleting…" : "Delete project"}
+          </button>
+        </div>
       </div>
       {(error || jobError) && <p className="error">{error || jobError}</p>}
       <section className="panel">
@@ -1510,7 +1715,7 @@ function ProjectPage() {
           <label className="field"><span>Minimum seconds</span><input type="number" min="15" max="180" value={highlightMinDuration} onChange={(event) => setHighlightMinDuration(Number(event.target.value))} /></label>
           <label className="field"><span>Maximum seconds</span><input type="number" min="15" max="180" value={highlightMaxDuration} onChange={(event) => setHighlightMaxDuration(Number(event.target.value))} /></label>
           <label className="field"><span>Number of clips</span><input type="number" min="1" max="30" value={highlightCount} onChange={(event) => setHighlightCount(Number(event.target.value))} /></label>
-          <label className="field"><span>Local Ollama model (optional)</span><input value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} placeholder="qwen2.5:7b" /></label>
+          <label className="field"><span>Local Ollama model (optional)</span><input value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} /></label>
           <label className="check-field"><input type="checkbox" checked={highlightOverlap} onChange={(event) => setHighlightOverlap(event.target.checked)} /><span>Allow overlapping suggestions</span></label>
           <label className="check-field"><input type="checkbox" checked={gamingMode} onChange={(event) => {
             const enabled = event.target.checked;
@@ -1635,6 +1840,73 @@ function ProjectPage() {
               <span>Upload a TrueType font (.ttf)</span>
               <input type="file" accept=".ttf,font/ttf" onChange={(event) => void uploadCaptionFont(event)} />
             </label>
+            <label className="field"><span>Watermark logo</span>
+              <select value={watermarkFile} onChange={(event) => setWatermarkFile(event.target.value)}>
+                <option value="">No watermark</option>
+                {logos.map((asset) => <option key={asset.filename} value={asset.filename}>{asset.filename}</option>)}
+              </select>
+            </label>
+            <label className="font-upload">
+              <span>Upload PNG, JPEG, or WebP logo</span>
+              <input type="file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" onChange={(event) => void uploadBrandAsset(event, "logos")} />
+            </label>
+            {watermarkFile && (
+              <>
+                <div className="time-inputs">
+                  <label className="field"><span>Logo position</span>
+                    <select value={watermarkPosition} onChange={(event) => setWatermarkPosition(event.target.value)}>
+                      <option value="top_left">Top left</option><option value="top_right">Top right</option>
+                      <option value="bottom_left">Bottom left</option><option value="bottom_right">Bottom right</option><option value="center">Center</option>
+                    </select>
+                  </label>
+                  <label className="field"><span>Logo size (%)</span><input type="number" min="5" max="50" value={watermarkSize} onChange={(event) => setWatermarkSize(Number(event.target.value))} /></label>
+                </div>
+                <label className="field"><span>Logo opacity ({Math.round(watermarkOpacity * 100)}%)</span>
+                  <input type="range" min="0.1" max="1" step="0.05" value={watermarkOpacity} onChange={(event) => setWatermarkOpacity(Number(event.target.value))} />
+                </label>
+              </>
+            )}
+            <label className="check-field"><input type="checkbox" checked={progressBar} onChange={(event) => setProgressBar(event.target.checked)} /><span>Show progress bar</span></label>
+            <div className="time-inputs">
+              <label className="field"><span>Intro clip (optional)</span>
+                <select value={introClipId} onChange={(event) => setIntroClipId(event.target.value)}>
+                  <option value="">No intro</option>
+                  {detail.clips.filter((clip) => clip.id !== captionClipId).map((clip) => <option key={clip.id} value={clip.id}>{detail.videos.find((item) => item.id === clip.video_id)?.title ?? "Video"} · {formatTime(clip.start_time)}–{formatTime(clip.end_time)}</option>)}
+                </select>
+              </label>
+              <label className="field"><span>Outro clip (optional)</span>
+                <select value={outroClipId} onChange={(event) => setOutroClipId(event.target.value)}>
+                  <option value="">No outro</option>
+                  {detail.clips.filter((clip) => clip.id !== captionClipId).map((clip) => <option key={clip.id} value={clip.id}>{detail.videos.find((item) => item.id === clip.video_id)?.title ?? "Video"} · {formatTime(clip.start_time)}–{formatTime(clip.end_time)}</option>)}
+                </select>
+              </label>
+            </div>
+            <label className="field"><span>Background music (optional)</span>
+              <select value={musicFile} onChange={(event) => setMusicFile(event.target.value)}>
+                <option value="">No music</option>
+                {musicAssets.map((asset) => <option key={asset.filename} value={asset.filename}>{asset.filename}</option>)}
+              </select>
+            </label>
+            <label className="font-upload">
+              <span>Upload music audio (up to 512 MB)</span>
+              <input type="file" accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,audio/*" onChange={(event) => void uploadBrandAsset(event, "music")} />
+            </label>
+            {musicFile && (
+              <>
+                <div className="time-inputs">
+                  <label className="field"><span>Source volume ({sourceVolume.toFixed(1)}×)</span>
+                    <input type="range" min="0" max="2" step="0.1" value={sourceVolume} onChange={(event) => setSourceVolume(Number(event.target.value))} />
+                  </label>
+                  <label className="field"><span>Music volume ({musicVolume.toFixed(1)}×)</span>
+                    <input type="range" min="0" max="2" step="0.05" value={musicVolume} onChange={(event) => setMusicVolume(Number(event.target.value))} />
+                  </label>
+                </div>
+                <label className="check-field"><input type="checkbox" checked={autoDuck} onChange={(event) => setAutoDuck(event.target.checked)} /><span>Automatically duck music under source audio</span></label>
+              </>
+            )}
+            <label className="check-field"><input type="checkbox" checked={autoZoom} onChange={(event) => setAutoZoom(event.target.checked)} /><span>Auto punch-in on emphasized words</span></label>
+            {autoZoom && <label className="field"><span>Zoom strength ({Math.round(zoomStrength * 100)}%)</span><input type="range" min="0.05" max="0.4" step="0.01" value={zoomStrength} onChange={(event) => setZoomStrength(Number(event.target.value))} /></label>}
+            <label className="check-field"><input type="checkbox" checked={useGpu} onChange={(event) => setUseGpu(event.target.checked)} /><span>Use NVIDIA NVENC when available</span></label>
             <div className="time-inputs">
               <label className="field"><span>Aspect ratio</span>
                 <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as AspectRatio)}>
@@ -1687,7 +1959,7 @@ function ProjectPage() {
                       {layoutPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
                     </select>
                   </label>
-                  <label className="field"><span>Preset name</span><input value={presetName} maxLength={80} onChange={(event) => setPresetName(event.target.value)} placeholder="My gaming layout" /></label>
+                  <label className="field"><span>Preset name</span><input value={presetName} maxLength={80} onChange={(event) => setPresetName(event.target.value)} /></label>
                   <button type="button" disabled={!presetName.trim()} onClick={() => void saveLayoutPreset()}>Save layout</button>
                   <button type="button" className="secondary-button" disabled={!selectedPresetId} onClick={() => void deleteLayoutPreset()}>Delete preset</button>
                 </div>
@@ -1701,6 +1973,9 @@ function ProjectPage() {
             </label>
             <button type="submit" disabled={exporting || !canExportCaptions || (!!job && ["queued", "running"].includes(job.status))}>
               {exporting ? "Queueing…" : "Export captioned MP4"}
+            </button>
+            <button type="button" className="secondary-button" disabled={exporting || !selectedBatchClipIds.length || (!!job && ["queued", "running"].includes(job.status))} onClick={() => void exportSelectedBatch()}>
+              {exporting ? "Queueing…" : `Batch export selected (${selectedBatchClipIds.length})`}
             </button>
             {captionClip && !canExportCaptions && <p className="muted small">Generate a transcript for this clip’s source video before exporting captions.</p>}
             {exportError && <p className="error">{exportError}</p>}
@@ -1746,7 +2021,13 @@ function ProjectPage() {
             )}
             <p className="muted small">Preview follows the source playhead and selected layout; the final export applies this crop, split-screen, or blurred fill.</p>
             <div className={`caption-preview caption-${captionPosition}`} style={{ fontFamily: fonts.find((font) => font.filename === captionFont)?.name ?? "Arial", fontSize: `clamp(16px, ${captionSize / 3}px, 40px)`, color: captionColor, textShadow: `0 2px ${Math.max(1, captionOutline)}px ${captionOutlineColor}` }}>
-              <span className="preview-inactive">Make every</span> <strong>moment</strong> <span className="preview-inactive">count ✨</span>
+              {captionPreviewWords.length > 0
+                ? captionPreviewWords.map((word) => (
+                  <span key={word.word_index} className={word.word_index === activeTranscriptIndex ? "preview-active" : "preview-inactive"}>
+                    {word.text}
+                  </span>
+                ))
+                : <span className="muted small">Play within the selected clip to preview its transcript captions.</span>}
             </div>
             <p className="muted small">Preview updates with your selected color, size, and position. Emoji rendering depends on the selected font’s glyph support.</p>
           </div>
@@ -1762,12 +2043,33 @@ function ProjectPage() {
             ))}
           </div>
         )}
+        {detail.batch_exports.length > 0 && (
+          <div className="clip-list export-list">
+            {detail.batch_exports.map((batch) => (
+              <div className="clip-row" key={batch.id}>
+                <div className="clip-mark">ZIP</div>
+                <div className="clip-info"><strong>Batch export archive</strong><span className="muted small">{new Date(batch.created_at).toLocaleString()}</span></div>
+                <a className="button secondary" href={apiUrl(batch.file_url)} download>Download ZIP</a>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
       <section className="panel">
         <div className="section-heading"><div><p className="eyebrow">OUTPUTS</p><h2>Clips</h2></div><span className="muted">{detail.clips.length} clips</span></div>
         {detail.clips.length === 0 ? <p className="empty-state muted">Finished clips will be listed here.</p> : (
           <div className="clip-list">
-            {detail.clips.map((clip) => <ClipRow key={clip.id} clip={clip} video={detail.videos.find((item) => item.id === clip.video_id)} />)}
+            {detail.clips.map((clip) => (
+              <ClipRow
+                key={clip.id}
+                clip={clip}
+                video={detail.videos.find((item) => item.id === clip.video_id)}
+                selected={selectedBatchClipIds.includes(clip.id)}
+                onToggle={() => setSelectedBatchClipIds((current) => current.includes(clip.id)
+                  ? current.filter((id) => id !== clip.id)
+                  : [...current, clip.id])}
+              />
+            ))}
           </div>
         )}
       </section>
@@ -1775,9 +2077,22 @@ function ProjectPage() {
   );
 }
 
-function ClipRow({ clip, video }: { clip: Clip; video?: Video }) {
+function ClipRow({
+  clip,
+  video,
+  selected,
+  onToggle,
+}: {
+  clip: Clip;
+  video?: Video;
+  selected: boolean;
+  onToggle: () => void;
+}) {
   return (
     <div className="clip-row">
+      <label className="batch-clip-select" title="Include in batch export">
+        <input type="checkbox" checked={selected} onChange={onToggle} aria-label={`Select ${video?.title ?? "clip"} for batch export`} />
+      </label>
       <div className="clip-mark">▶</div>
       <div className="clip-info"><strong>{video?.title ?? "Video clip"}</strong><span className="muted small">{formatTime(clip.start_time)} – {formatTime(clip.end_time)} · {clip.mode === "copy" ? "Stream copy" : "Accurate"}</span></div>
       <div className="clip-actions">
@@ -1836,10 +2151,10 @@ function HighlightCard({
     <article className={`suggestion-card suggestion-${suggestion.status}`}>
       {suggestion.thumbnail_url ? (
         <button type="button" className="thumbnail-button" onClick={onPreview} title="Preview this moment">
-          <img src={apiUrl(suggestion.thumbnail_url)} alt={`Preview: ${suggestion.title}`} loading="lazy" />
+          <img src={apiUrl(suggestion.thumbnail_url)} alt={`Preview: ${suggestion.title}`} loading="lazy" decoding="async" />
           <span className="thumbnail-play">▶</span>
         </button>
-      ) : <button type="button" className="thumbnail-placeholder" onClick={onPreview}>Preview</button>}
+      ) : <button type="button" className="thumbnail-placeholder" onClick={onPreview}>Thumbnail unavailable · preview moment</button>}
       <div className="suggestion-content">
         <div className="suggestion-heading">
           <strong>{suggestion.score.toFixed(1)}<small>/100</small></strong>
@@ -1879,6 +2194,7 @@ function JobCard({ job }: { job: Job }) {
     clip: "Clip job",
     transcription: `Transcription${job.model ? ` · ${job.model}` : ""}`,
     export: "Captioned export",
+    batch_export: "Batch captioned export",
     highlight_analysis: "Highlight analysis",
     live_clip: "Live buffer clip",
   };
@@ -1891,31 +2207,93 @@ function JobCard({ job }: { job: Job }) {
 }
 
 function SettingsPage() {
+  usePageMetadata("Settings | Local Clipper", "Configure local processing, storage, exports, maintenance, and diagnostics.");
   const [dataDir, setDataDir] = useState("");
+  const [outputDir, setOutputDir] = useState("");
+  const [logsFile, setLogsFile] = useState("");
+  const [ollamaUrl, setOllamaUrl] = useState("");
   const [cookiesFile, setCookiesFile] = useState("");
+  const [preferences, setPreferences] = useState<AppPreferences | null>(null);
+  const [diskUsage, setDiskUsage] = useState<{ total_bytes: number; categories: Record<string, number> } | null>(null);
+  const [logs, setLogs] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const loadMaintenance = useCallback(async () => {
+    const [disk, logResponse] = await Promise.all([
+      apiRequest<{ total_bytes: number; categories: Record<string, number> }>("/api/maintenance/disk"),
+      fetch(apiUrl("/api/logs")),
+    ]);
+    if (!logResponse.ok) throw new Error(`Could not load logs (${logResponse.status}).`);
+    setDiskUsage(disk);
+    setLogs(await logResponse.text());
+  }, []);
 
   useEffect(() => {
-    apiRequest<{ data_dir: string; cookies_file: string }>("/api/settings")
-      .then((settings) => { setDataDir(settings.data_dir); setCookiesFile(settings.cookies_file); })
+    Promise.all([
+      apiRequest<{
+        data_dir: string;
+        output_dir: string;
+        logs_file: string;
+        cookies_file: string;
+        ollama_url: string;
+        preferences: AppPreferences;
+      }>("/api/settings"),
+      loadMaintenance(),
+    ])
+      .then(([settings]) => {
+        setDataDir(settings.data_dir);
+        setOutputDir(settings.output_dir);
+        setLogsFile(settings.logs_file);
+        setOllamaUrl(settings.ollama_url);
+        setCookiesFile(settings.cookies_file);
+        setPreferences(settings.preferences);
+      })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Could not load settings."));
-  }, []);
+  }, [loadMaintenance]);
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setMessage("");
+    if (!preferences) return;
     try {
-      const saved = await apiRequest<{ cookies_file: string }>("/api/settings", {
+      const saved = await apiRequest<{ cookies_file: string; preferences: AppPreferences }>("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cookies_file: cookiesFile }),
+        body: JSON.stringify({ ...preferences, cookies_file: cookiesFile }),
       });
       setCookiesFile(saved.cookies_file);
+      setPreferences(saved.preferences);
       setMessage("Settings saved.");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not save settings.");
+    }
+  }
+
+  async function cleanTemporaryFiles() {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await apiRequest<{ removed_files: number; removed_bytes: number; expired_upload_sessions: number }>("/api/maintenance/cleanup", { method: "POST" });
+      setMessage(`Removed ${result.removed_files} temporary files (${formatBytes(result.removed_bytes)}); expired ${result.expired_upload_sessions} upload sessions.`);
+      await loadMaintenance();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not clean temporary files.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshLogs() {
+    setError("");
+    try {
+      const response = await fetch(apiUrl("/api/logs"));
+      if (!response.ok) throw new Error(`Could not load logs (${response.status}).`);
+      setLogs(await response.text());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not load logs.");
     }
   }
 
@@ -1925,15 +2303,93 @@ function SettingsPage() {
       <form className="panel settings-form" onSubmit={saveSettings}>
         <div><p className="eyebrow">STORAGE</p><h2>Local paths</h2></div>
         <label className="field"><span>Project data directory</span><input value={dataDir} readOnly /></label>
-        <p className="muted small">Change this path with DATA_DIR before starting the backend.</p>
-        <label className="field"><span>yt-dlp cookies file (optional)</span><input value={cookiesFile} onChange={(event) => setCookiesFile(event.target.value)} placeholder="C:\\Users\\you\\cookies.txt" /></label>
+        <label className="field"><span>Export output directory</span><input value={outputDir} readOnly /></label>
+        <label className="field"><span>Application log file</span><input value={logsFile} readOnly /></label>
+        <p className="muted small">Change the storage path with CLIPPER_DATA_DIR before starting Docker, or DATA_DIR in local mode.</p>
+        <label className="field"><span>yt-dlp cookies file (optional)</span><input value={cookiesFile} onChange={(event) => setCookiesFile(event.target.value)} /></label>
         <p className="muted small">Use an exported cookies.txt file only for content you are authorized to access.</p>
-        <div><button type="submit">Save settings</button></div>
+        <div><p className="eyebrow">LOCAL AI & EXPORT DEFAULTS</p><h2>Processing preferences</h2></div>
+        <label className="field"><span>Default Whisper model</span>
+          <select disabled={!preferences} value={preferences?.default_whisper_model ?? "small"} onChange={(event) => setPreferences((current) => current && ({ ...current, default_whisper_model: event.target.value as AppPreferences["default_whisper_model"] }))}>
+            {["tiny", "base", "small", "medium", "large-v3"].map((model) => <option key={model} value={model}>{model}</option>)}
+          </select>
+        </label>
+        <label className="field"><span>Ollama model</span><input value={preferences?.ollama_model ?? ""} onChange={(event) => setPreferences((current) => current && ({ ...current, ollama_model: event.target.value }))} /></label>
+        <label className="field"><span>Ollama URL</span><input value={ollamaUrl} readOnly /></label>
+        <label className="check-field"><input type="checkbox" checked={preferences?.gpu_enabled ?? true} onChange={(event) => setPreferences((current) => current && ({ ...current, gpu_enabled: event.target.checked }))} /><span>Use GPU acceleration when available (CPU fallback remains enabled)</span></label>
+        <label className="field"><span>Default caption preset</span>
+          <select value={preferences?.default_caption_preset ?? "bold_yellow"} onChange={(event) => setPreferences((current) => current && ({ ...current, default_caption_preset: event.target.value as AppPreferences["default_caption_preset"] }))}>
+            <option value="bold_yellow">Bold yellow</option><option value="minimal_white">Minimal white</option><option value="boxed">Boxed</option><option value="glow">Glow</option>
+          </select>
+        </label>
+        <label className="field"><span>Default aspect ratio</span>
+          <select value={preferences?.default_aspect_ratio ?? "9:16"} onChange={(event) => setPreferences((current) => current && ({ ...current, default_aspect_ratio: event.target.value as AppPreferences["default_aspect_ratio"] }))}>
+            <option value="9:16">9:16</option><option value="1:1">1:1</option><option value="4:5">4:5</option><option value="16:9">16:9</option>
+          </select>
+        </label>
+        <div className="time-inputs">
+          <label className="field"><span>Default clip length (seconds)</span><input type="number" min="1" max="600" value={preferences?.default_clip_length ?? 60} onChange={(event) => setPreferences((current) => current && ({ ...current, default_clip_length: Number(event.target.value) }))} /></label>
+          <label className="field"><span>Default live buffer (minutes)</span><input type="number" min="1" max="240" value={preferences?.default_buffer_minutes ?? 30} onChange={(event) => setPreferences((current) => current && ({ ...current, default_buffer_minutes: Number(event.target.value) }))} /></label>
+        </div>
+        <label className="field"><span>Global hotkey</span>
+          <select value={preferences?.hotkey ?? "Ctrl+Alt+C"} onChange={(event) => setPreferences((current) => current && ({ ...current, hotkey: event.target.value as AppPreferences["hotkey"] }))}>
+            <option value="Ctrl+Alt+C">Ctrl + Alt + C</option><option value="Ctrl+Alt+X">Ctrl + Alt + X</option><option value="Ctrl+Shift+C">Ctrl + Shift + C</option>
+          </select>
+        </label>
+        <div><button type="submit" disabled={!preferences}>Save settings</button></div>
         {message && <p className="success">{message}</p>}
         {error && <p className="error">{error}</p>}
       </form>
+      <section className="panel settings-form">
+        <div className="section-heading"><div><p className="eyebrow">LOCAL STORAGE</p><h2>Disk usage</h2></div><strong>{diskUsage ? formatBytes(diskUsage.total_bytes) : "…"}</strong></div>
+        {diskUsage && <div className="disk-usage-grid">{Object.entries(diskUsage.categories).map(([name, bytes]) => <div key={name}><span>{name}</span><strong>{formatBytes(bytes)}</strong></div>)}</div>}
+        <button type="button" className="secondary-button" disabled={busy} onClick={() => void cleanTemporaryFiles()}>{busy ? "Cleaning…" : "Clean stale temporary files"}</button>
+        <p className="muted small">Only expired, app-owned upload and temporary files are removed. Source videos, clips, and exports are preserved.</p>
+      </section>
+      <section className="panel settings-form">
+        <div className="section-heading"><div><p className="eyebrow">DIAGNOSTICS</p><h2>Application logs</h2></div><button type="button" className="secondary-button" onClick={() => void refreshLogs()}>Refresh</button></div>
+        <pre className="logs-viewer">{logs || "No log entries yet."}</pre>
+        <p className="muted small">Showing at most the latest 200 log lines.</p>
+      </section>
     </main>
   );
+}
+
+function NotFoundPage() {
+  usePageMetadata("Page not found | Local Clipper", "The requested Local Clipper page could not be found.");
+  return (
+    <main className="page-shell not-found-page">
+      <p className="eyebrow">404 · NOT FOUND</p>
+      <h1>This page isn’t here.</h1>
+      <p className="muted">The link may be outdated, or the page may have moved.</p>
+      <Link className="button" to="/">Back to projects</Link>
+    </main>
+  );
+}
+
+function Footer() {
+  return (
+    <footer className="footer">
+      <p>© {new Date().getFullYear()} Local Clipper · Use media you own or have permission to clip.</p>
+      <nav aria-label="Footer navigation">
+        <Link to="/">Projects</Link>
+        <Link to="/live">Live</Link>
+        <Link to="/settings">Settings</Link>
+      </nav>
+    </footer>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
 function formatTime(seconds: number): string {
@@ -1984,8 +2440,9 @@ export default function App() {
         <Route path="/live" element={<LivePage />} />
         <Route path="/projects/:projectId" element={<ProjectPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
-      <footer className="footer">LOCAL-FIRST · NO CLOUD ACCOUNTS · YOUR FILES STAY YOURS</footer>
+      <Footer />
     </div>
   );
 }

@@ -123,6 +123,20 @@ class ExportCreate(BaseModel):
     layout: Literal["single", "gaming_split"] = "single"
     facecam_region: VideoRegion | None = None
     gameplay_region: VideoRegion | None = None
+    watermark_file: str | None = Field(default=None, max_length=255)
+    watermark_position: Literal["top_left", "top_right", "bottom_left", "bottom_right", "center"] = "bottom_right"
+    watermark_size: int = Field(default=15, ge=5, le=50)
+    watermark_opacity: float = Field(default=0.8, ge=0.1, le=1)
+    progress_bar: bool = False
+    intro_clip_id: str | None = Field(default=None, max_length=80)
+    outro_clip_id: str | None = Field(default=None, max_length=80)
+    music_file: str | None = Field(default=None, max_length=255)
+    source_volume: float = Field(default=1, ge=0, le=2)
+    music_volume: float = Field(default=0.2, ge=0, le=2)
+    auto_duck: bool = True
+    auto_zoom: bool = False
+    zoom_strength: float = Field(default=0.12, ge=0.05, le=0.4)
+    use_gpu: bool = True
 
     @model_validator(mode="after")
     def validate_dimensions(self) -> "ExportCreate":
@@ -227,4 +241,24 @@ class SuggestionClipCreate(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
-    cookies_file: str = ""
+    cookies_file: str | None = Field(default=None, max_length=2048)
+    default_whisper_model: Literal["tiny", "base", "small", "medium", "large-v3"] | None = None
+    ollama_model: str | None = Field(default=None, max_length=100)
+    gpu_enabled: bool | None = None
+    default_caption_preset: Literal["bold_yellow", "minimal_white", "boxed", "glow"] | None = None
+    default_aspect_ratio: Literal["9:16", "1:1", "4:5", "16:9"] | None = None
+    default_clip_length: int | None = Field(default=None, ge=1, le=600)
+    default_buffer_minutes: int | None = Field(default=None, ge=1, le=240)
+    hotkey: Literal["Ctrl+Alt+C", "Ctrl+Alt+X", "Ctrl+Shift+C"] | None = None
+
+
+class BatchExportCreate(BaseModel):
+    clip_ids: list[str] = Field(min_length=1, max_length=50)
+    settings: ExportCreate
+
+    @field_validator("clip_ids")
+    @classmethod
+    def require_unique_clips(cls, values: list[str]) -> list[str]:
+        if len(set(values)) != len(values):
+            raise ValueError("Select each clip only once.")
+        return values

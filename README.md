@@ -14,7 +14,9 @@ Use it only with content you own or have permission to download and clip, and fo
 - **Chunked upload** writes bounded chunks to disk; files up to 10 GB are never assembled in application memory.
 - **ffprobe** extracts duration, frame size, and frame rate. **ffmpeg** creates accurate re-encoded MP4 clips or fast stream-copy MKV clips.
 - **faster-whisper** runs locally, detects the spoken language, produces word timestamps, and processes long videos in ten-minute audio chunks. Model weights are cached locally in the data directory after first use.
-- **ASS karaoke captions** group transcript words into readable lines and animate each word. Exports normalize audio to -14 LUFS and render H.264/AAC MP4s using NVENC when available, with CPU encoder fallback.
+- **ASS karaoke captions** group transcript words into readable lines and animate each word. Exports normalize audio to -14 LUFS and render H.264/AAC MP4s using NVENC when enabled and available, with CPU encoder fallback.
+- **Export polish** supports local logo watermarks, optional intro/outro clips, a progress bar, background music with optional speech ducking, source/music volume controls, and punch-in zooms on emphasized transcript words. Multiple captioned clips can be queued together and downloaded as a ZIP.
+- **Settings and maintenance** persist local defaults, show data/output paths, disk usage and recent logs, and remove only stale application-owned temporary files. Project deletion removes its database records and confined project files after active jobs finish.
 - **Timeline and reframing** use streamed FFmpeg waveform peaks with wavesurfer.js regions, local MediaPipe face tracking with smoothed crop motion, optional blurred background fill, and draggable gaming-layout regions.
 - **Highlight analysis** combines local Ollama transcript moments (when available), transcript keyword heuristics, streamed audio-energy/laughter-like cues, PySceneDetect scene changes, and sampled visual motion. Weighted scores are normalized to 0–100; missing/unavailable signals are reported and Ollama is never required.
 - **Live capture** uses Streamlink with yt-dlp fallback and FFmpeg's segment muxer to keep a local rolling transport-stream buffer. The worker prunes completed segments against the time window and disk cap, reconnects after stream drops, measures optional audio peaks, and watches Twitch IRC or YouTube live chat activity when enabled.
@@ -28,8 +30,8 @@ Use it only with content you own or have permission to download and clip, and fo
 clipper-pro-max/
 ├── backend/
 │   ├── app/
-│   │   ├── routes/                 # Projects, media, timeline, highlights, transcription, exports, jobs
-│   │   ├── services/               # Ollama, signal analysis, Whisper, waveform, reframing, exports
+│   │   ├── routes/                 # Projects, media, timeline, live, highlights, transcription, exports, jobs
+│   │   ├── services/               # Ollama, live buffer, stream capture, Whisper, reframing, exports
 │   │   ├── config.py
 │   │   ├── db.py
 │   │   ├── schemas.py
@@ -48,6 +50,7 @@ clipper-pro-max/
 ├── docker-compose.yml
 ├── .env.example
 ├── README.md
+├── run_live_hotkey.bat
 └── run_local.bat
 ```
 
@@ -123,8 +126,23 @@ The GPU worker uses CUDA/cuDNN when available. Transcription automatically retri
 10. Open **Live** to select a project, paste a live URL, and start recording. Configure the rolling window and disk cap; Streamlink is tried first and yt-dlp is used as fallback. The dashboard shows recording/reconnect status, buffer duration/size, and stop controls. Clip 30, 60, or 90 seconds (or enter a custom 1–600 seconds); the resulting MP4 appears as a video in the project editor.
 11. To use the system-wide hotkey, keep the API running and launch `run_live_hotkey.bat` in another terminal. It registers **Ctrl+Alt+C** and queues a 60-second clip from the newest active recording, even when the browser is unfocused. For example, `run_live_hotkey.bat --seconds 90` changes its duration. Press Ctrl+C in the helper window to unregister the hotkey.
 12. Optional live candidates can be enabled when starting a recording: audio peaks use FFmpeg's local loudness measurement; Twitch chat is read over anonymous IRC and YouTube chat through pytchat. Chat detection is not available for Kick. Candidate rows include the trigger reason and can queue a clip from the current buffer.
+13. In **Export captioned clip**, upload a logo or audio bed, optionally choose intro/outro clips, adjust volumes/ducking, turn on the progress bar or emphasized-word zoom, and choose whether to use GPU encoding. These effects are rendered locally by FFmpeg.
+14. Check multiple clip checkboxes and use **Batch export selected** to render them with the current export settings. Each output is added to the project’s export list and a ZIP link appears when the batch finishes.
+15. Open **Settings** to configure persistent Whisper/Ollama/GPU/export/live defaults and the helper hotkey. The disk panel reports storage categories; stale temporary upload fragments are eligible for cleanup after 24 hours. Project deletion is available from the project page and is blocked while its jobs are active.
+16. The same Whisper model transcript is reused on subsequent requests for that video. Selecting a different model replaces it with a new local transcript.
 
 URL downloading depends on yt-dlp extractor support and source availability. Some sources require a cookies file. No login credentials are collected by this app. Audio laughter/excitement cues are local signal heuristics (loudness, burstiness, and zero-crossing features), not a dedicated trained emotion classifier.
+
+## Settings, maintenance, and troubleshooting
+
+- **Storage location:** local mode reads `DATA_DIR`; Docker Compose reads `CLIPPER_DATA_DIR` on Windows and mounts it at `/data`. Ensure the selected drive has enough free space for source videos, Whisper weights, live buffers, and exports.
+- **FFmpeg unavailable:** install a Windows FFmpeg build and add its `bin` folder to `PATH`, then open a new terminal and confirm `ffmpeg -version` and `ffprobe -version`. Docker images include FFmpeg.
+- **GPU unavailable:** keep GPU acceleration enabled to try NVENC; exports fall back to `libx264`. Whisper retries on CPU if CUDA fails. Docker GPU mode also requires NVIDIA drivers and Docker Desktop GPU passthrough.
+- **Whisper first run:** the selected model downloads once into the local data directory. Larger models need more disk space and memory; choose `tiny` or `base` on lower-memory machines. Transcripts for the same video/model are reused.
+- **Ollama not running:** highlight analysis and metadata generation continue with local heuristics. For Docker, start the `ollama` profile and pull a model as shown above.
+- **Upload/download stalls:** check the project job card and `Settings → Application logs`; failed jobs display their error. Confirm there is space in the data directory and that the source URL remains accessible.
+- **Cleanup and deletion:** cleanup removes only expired temporary upload fragments and stale concat lists, not media or exports. Project deletion is permanent; it is refused while the project's jobs are queued or running.
+- **Data locality:** the app has no hosted service integrations. Whisper, FFmpeg, yt-dlp, Streamlink, SQLite and Ollama (if enabled) run locally. Download only media you own or have permission to use.
 
 ## Test
 
@@ -149,4 +167,4 @@ To check the API after startup:
 curl.exe http://127.0.0.1:8000/api/health
 ```
 
-Caption tests verify word timing, ASS karaoke generation, preset validation, and SRT timestamps. Highlight tests cover weighted scoring, ranking, duration bounds, and overlap behavior. Reframing tests cover crop bounds, center tracking, smoothing, and time-varying crop expressions. Live-buffer tests cover selecting/pruning segments and cutting the latest requested duration; those tests mock FFmpeg and need no stream. Actual Streamlink/yt-dlp recording and FFmpeg live cuts require the installed local media dependencies and a permitted live stream.
+Caption tests verify word timing, ASS karaoke generation, preset validation, and SRT timestamps. Export tests inspect generated FFmpeg filter graphs, NVENC fallback, reframing, watermark/audio/progress effects, and do not require a GPU. Highlight tests cover weighted scoring, ranking, duration bounds, and overlap behavior. Reframing tests cover crop bounds, center tracking, smoothing, and time-varying crop expressions. Live-buffer tests cover selecting/pruning segments and cutting the latest requested duration; those tests mock FFmpeg and need no stream. Actual Streamlink/yt-dlp recording and FFmpeg live cuts require the installed local media dependencies and a permitted live stream.

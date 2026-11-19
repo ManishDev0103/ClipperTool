@@ -7,28 +7,47 @@ import urllib.request
 
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
 WM_HOTKEY = 0x0312
 HOTKEY_ID = 1
-VK_C = ord("C")
+HOTKEYS = {
+    "Ctrl+Alt+C": (MOD_CONTROL | MOD_ALT, ord("C")),
+    "Ctrl+Alt+X": (MOD_CONTROL | MOD_ALT, ord("X")),
+    "Ctrl+Shift+C": (MOD_CONTROL | MOD_SHIFT, ord("C")),
+}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Clip the latest live buffer with Ctrl+Alt+C.")
-    parser.add_argument("--seconds", type=int, default=60, help="Clip length from 1 to 600 seconds.")
+    parser = argparse.ArgumentParser(description="Clip the latest live buffer with the configured Windows hotkey.")
+    parser.add_argument("--seconds", type=int, help="Override the configured clip length (1–600 seconds).")
     parser.add_argument("--api", default="http://127.0.0.1:8000", help="Local Clipper API base URL.")
     args = parser.parse_args()
-    if not 1 <= args.seconds <= 600:
+    if args.seconds is not None and not 1 <= args.seconds <= 600:
         parser.error("--seconds must be between 1 and 600.")
     if sys.platform != "win32":
         parser.error("The global hotkey helper requires Windows.")
 
+    try:
+        with urllib.request.urlopen(f"{args.api.rstrip('/')}/api/settings", timeout=10) as response:
+            settings = json.loads(response.read().decode("utf-8"))
+        preferences = settings["preferences"]
+        hotkey = preferences["hotkey"]
+        modifiers, virtual_key = HOTKEYS[hotkey]
+        seconds = args.seconds if args.seconds is not None else int(preferences["default_clip_length"])
+    except urllib.error.URLError as exc:
+        print(f"Could not load hotkey settings from the local API: {exc.reason}", file=sys.stderr)
+        return 1
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"The local API returned invalid hotkey settings: {exc}", file=sys.stderr)
+        return 1
+
     from ctypes import wintypes
 
     user32 = ctypes.windll.user32
-    if not user32.RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_ALT, VK_C):
-        print("Could not register Ctrl+Alt+C. Check that another application is not using it.", file=sys.stderr)
+    if not user32.RegisterHotKey(None, HOTKEY_ID, modifiers, virtual_key):
+        print(f"Could not register {hotkey}. Check that another application is not using it.", file=sys.stderr)
         return 1
-    print(f"Global hotkey active: Ctrl+Alt+C clips the last {args.seconds} seconds.")
+    print(f"Global hotkey active: {hotkey} clips the last {seconds} seconds.")
     print("Press Ctrl+C in this window to stop the helper.")
     message = wintypes.MSG()
     try:
@@ -37,7 +56,7 @@ def main() -> int:
                 continue
             request = urllib.request.Request(
                 f"{args.api.rstrip('/')}/api/live/clip-last",
-                data=json.dumps({"seconds": args.seconds}).encode("utf-8"),
+                data=json.dumps({"seconds": seconds}).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
