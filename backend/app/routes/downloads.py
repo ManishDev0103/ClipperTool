@@ -18,7 +18,7 @@ def queue_download(project_id: str, request: DownloadCreate) -> dict:
             raise HTTPException(status_code=404, detail="Project not found.")
         connection.execute(
             "INSERT INTO jobs (id, project_id, kind, status, message, payload) "
-            "VALUES (?, ?, 'download', 'queued', 'Waiting in download queue', ?)",
+            "VALUES (?, ?, 'download', 'queued', 'Waiting to resolve video stream', ?)",
             (job_id, project_id, json.dumps(payload)),
         )
     return {"job_id": job_id, "status": "queued"}

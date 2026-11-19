@@ -5,6 +5,7 @@ services:
     environment:
       DATA_DIR: /data
       RUN_WORKER: "false"
+      MEDIA_PROXY_BASE_URL: http://backend:8000
       YT_DLP_COOKIES_FILE: ${YT_DLP_COOKIES_FILE:-}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
@@ -30,6 +31,7 @@ services:
     environment:
       DATA_DIR: /data
       RUN_WORKER: "false"
+      MEDIA_PROXY_BASE_URL: http://backend:8000
       YT_DLP_COOKIES_FILE: ${YT_DLP_COOKIES_FILE:-}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
@@ -48,6 +50,7 @@ services:
     environment:
       DATA_DIR: /data
       RUN_WORKER: "false"
+      MEDIA_PROXY_BASE_URL: http://backend:8000
       YT_DLP_COOKIES_FILE: ${YT_DLP_COOKIES_FILE:-}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}

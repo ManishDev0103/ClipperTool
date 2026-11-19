@@ -1,6 +1,7 @@
 import math
-from pathlib import Path
 from typing import Any
+
+from app.services.media_source import MediaSource, is_remote_media_source
 
 
 class ReframeError(RuntimeError):
@@ -119,7 +120,7 @@ def build_crop_plan(
 
 
 def detect_face_track(
-    source: Path,
+    source: MediaSource,
     duration: float,
     start_offset: float = 0.0,
     sample_limit: int = 240,
@@ -142,8 +143,11 @@ def detect_face_track(
     if not capture.isOpened():
         raise ReframeError(f"Could not open video for face tracking: {source}")
     sample_count = min(max(2, math.ceil(duration * 2) + 1), max(2, sample_limit))
+    is_remote = is_remote_media_source(source)
+    frame_rate = max(1.0, float(capture.get(cv2.CAP_PROP_FPS) or 30.0))
     last_center: tuple[float, float] | None = None
     points: list[dict[str, float]] = []
+    frame_index = -1
     try:
         with mp.solutions.face_detection.FaceDetection(
             model_selection=0,
@@ -151,8 +155,19 @@ def detect_face_track(
         ) as detector:
             for index in range(sample_count):
                 time = duration * index / (sample_count - 1)
-                capture.set(cv2.CAP_PROP_POS_MSEC, (start_offset + time) * 1000)
-                success, frame = capture.read()
+                if is_remote:
+                    target_frame = round(time * frame_rate)
+                    success = True
+                    while frame_index < target_frame:
+                        success, frame = capture.read()
+                        frame_index += 1
+                        if not success:
+                            break
+                else:
+                    capture.set(cv2.CAP_PROP_POS_MSEC, (start_offset + time) * 1000)
+                    success, frame = capture.read()
+                if is_remote and not success:
+                    break
                 center = last_center or (0.5, 0.5)
                 if success:
                     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

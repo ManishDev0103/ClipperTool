@@ -1,17 +1,17 @@
 import json
 import subprocess
 from fractions import Fraction
-from pathlib import Path
 from typing import Any
 
 from app.config import FFPROBE_BIN
+from app.services.media_source import MediaSource
 
 
 class MediaProbeError(RuntimeError):
     """Raised when ffprobe cannot read a media file."""
 
 
-def probe_media(path: Path) -> dict[str, Any]:
+def probe_media(path: MediaSource) -> dict[str, Any]:
     command = [
         FFPROBE_BIN,
         "-v",

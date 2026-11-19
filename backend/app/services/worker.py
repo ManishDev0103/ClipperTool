@@ -14,9 +14,10 @@ from app.config import DATA_DIR, YT_DLP_COOKIES_FILE
 from app.db import connect, initialize_db
 from app.services.cutting import cut_clip
 from app.services.captions import build_caption_style, font_family
-from app.services.downloader import download_video
+from app.services.downloader import resolve_video_stream
 from app.services.exporting import export_captioned_clip
 from app.services.highlight_analysis import analyze_video_highlights, create_thumbnail
+from app.services.media_source import is_remote_media_source, video_source
 from app.services.ollama import generate_clip_metadata
 from app.services.media import probe_media
 from app.services.reframing import detect_face_track
@@ -45,57 +46,52 @@ def update_job(job_id: str, **fields: Any) -> None:
 
 
 def _process_download(job: dict[str, Any], payload: dict[str, Any]) -> None:
-    project_dir = DATA_DIR / "videos" / job["project_id"]
-
-    def progress(percent: float, message: str) -> None:
-        update_job(job["id"], progress=percent, message=message)
-
-    media_path: Path | None = None
     info: dict[str, Any] = {}
     last_error: Exception | None = None
+    update_job(job["id"], progress=5, message="Resolving video stream")
     for attempt in range(1, 4):
         try:
             if attempt > 1:
-                update_job(job["id"], message=f"Retrying download ({attempt}/3)")
-            media_path, info = download_video(
+                update_job(job["id"], message=f"Retrying stream resolution ({attempt}/3)")
+            info = resolve_video_stream(
                 payload["url"],
-                project_dir,
                 payload["quality"],
                 _cookies_file(),
-                progress,
-                job["id"],
             )
             break
         except Exception as exc:
             last_error = exc
-            LOGGER.warning("Download attempt %s for job %s failed: %s", attempt, job["id"], exc)
+            LOGGER.warning("Stream resolution attempt %s for job %s failed: %s", attempt, job["id"], exc)
             if attempt < 3:
                 time.sleep(attempt)
-    if media_path is None:
-        raise RuntimeError(f"Download failed after 3 attempts: {last_error}") from last_error
+    if not info:
+        raise RuntimeError(f"Could not resolve video stream after 3 attempts: {last_error}") from last_error
 
-    metadata = probe_media(media_path)
-    title = str(info.get("title") or media_path.stem)
+    title = str(info.get("title") or payload["url"])
+    duration = float(info["duration"])
     video_id = str(uuid4())
+    update_job(job["id"], progress=75, message="Stream ready; queuing local analysis")
     with connect() as connection:
         connection.execute(
             """
-            INSERT INTO videos (id, project_id, title, source_url, file_path, duration, width, height, fps)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO videos
+                (id, project_id, title, source_url, file_path, stream_quality, duration, width, height, fps)
+            VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?)
             """,
             (
                 video_id,
                 job["project_id"],
                 title,
                 payload["url"],
-                str(media_path),
-                metadata["duration"],
-                metadata["width"],
-                metadata["height"],
-                metadata["fps"],
+                payload["quality"],
+                duration,
+                info.get("width"),
+                info.get("height"),
+                info.get("fps"),
             ),
         )
         queue_auto_highlight_analysis(connection, job["project_id"], video_id)
+    update_job(job["id"], progress=100, message="Video stream ready; no source file saved")
 
 
 def _process_clip(job: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -114,10 +110,17 @@ def _process_clip(job: dict[str, Any], payload: dict[str, Any]) -> None:
     def progress(percent: float) -> None:
         update_job(job["id"], progress=percent, message="Cutting clip")
 
+    source = video_source(video)
+    start_time = float(payload["start_time"])
+    end_time = float(payload["end_time"])
+    if is_remote_media_source(source):
+        source = video_source(video, start_time)
+        end_time -= start_time
+        start_time = 0
     cut_clip(
-        Path(video["file_path"]),
-        payload["start_time"],
-        payload["end_time"],
+        source,
+        start_time,
+        end_time,
         output_path,
         payload["mode"],
         progress,
@@ -174,7 +177,8 @@ def _process_clip(job: dict[str, Any], payload: dict[str, Any]) -> None:
 def _process_transcription(job: dict[str, Any], payload: dict[str, Any]) -> None:
     with connect() as connection:
         video = connection.execute(
-            "SELECT file_path, duration FROM videos WHERE id = ? AND project_id = ?",
+            "SELECT id, file_path, source_url, stream_quality, duration "
+            "FROM videos WHERE id = ? AND project_id = ?",
             (payload["video_id"], job["project_id"]),
         ).fetchone()
         existing = connection.execute(
@@ -193,7 +197,7 @@ def _process_transcription(job: dict[str, Any], payload: dict[str, Any]) -> None
         update_job(job["id"], progress=percent, message=message)
 
     words, language, _device = transcribe_video(
-        Path(video["file_path"]),
+        video_source(video),
         float(video["duration"]),
         payload["model"],
         payload["device"],
@@ -386,7 +390,7 @@ def _process_highlights(job: dict[str, Any], payload: dict[str, Any]) -> None:
         update_job(job["id"], progress=percent, message=message)
 
     result = analyze_video_highlights(
-        Path(video["file_path"]),
+        video_source(video),
         float(video["duration"]),
         [dict(row) for row in transcript_rows],
         payload["settings"],
@@ -401,7 +405,7 @@ def _process_highlights(job: dict[str, Any], payload: dict[str, Any]) -> None:
         thumbnail_path = thumbnail_dir / f"{suggestion['id']}.jpg"
         try:
             create_thumbnail(
-                Path(video["file_path"]),
+                video_source(video),
                 thumbnail_path,
                 (suggestion["start_time"] + suggestion["end_time"]) / 2,
             )

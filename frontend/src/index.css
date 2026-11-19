@@ -252,3 +252,235 @@ button, .button { white-space: normal; overflow-wrap: anywhere; }
   .job-progress small { text-align: left; }
   .footer nav { gap: 14px; }
 }
+
+:root {
+  color-scheme: dark;
+  background: #100b18;
+}
+
+.app {
+  background:
+    radial-gradient(ellipse at 82% -14%, #ee4b8c2b 0, transparent 34%),
+    radial-gradient(ellipse at 8% 42%, #4eb9d312 0, transparent 37%),
+    linear-gradient(160deg, #100b18 0%, #171022 52%, #100d18 100%);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-bottom-color: #ff6b9b30;
+  background: #120d1be8;
+  backdrop-filter: blur(16px);
+}
+
+.brand {
+  color: #ff6b9b;
+  text-shadow: 0 0 20px #ff4d8d55;
+}
+
+.topbar nav a:hover,
+.back-link:hover,
+.footer a:hover {
+  color: #ff7ca9;
+}
+
+.hero {
+  position: relative;
+  isolation: isolate;
+  min-height: 300px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 46px 0 56px;
+}
+
+.hero::before,
+.hero::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.hero::before {
+  width: min(34vw, 330px);
+  aspect-ratio: 1;
+  top: 50%;
+  right: 7%;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 17px, #170e1b 18px 22px),
+    linear-gradient(145deg, #ffe49a 0%, #ff8e88 38%, #ef4e98 68%, #8b53bd 100%);
+  box-shadow: 0 0 70px #ff5c9748;
+  opacity: .8;
+  -webkit-mask-image: radial-gradient(circle, #000 62%, transparent 72%);
+  mask-image: radial-gradient(circle, #000 62%, transparent 72%);
+}
+
+.hero::after {
+  inset: auto 0 8px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #ff6b9b80 36%, #63d8df80 74%, transparent);
+}
+
+.hero h1 {
+  max-width: 560px;
+  text-shadow: 0 8px 40px #09060d99;
+}
+
+.hero > p:last-child {
+  max-width: 500px;
+}
+
+.hero h1 span {
+  color: #ff729d;
+  background: linear-gradient(95deg, #ff7ca5 8%, #ffbd82 58%, #61d9de 115%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.eyebrow {
+  color: #ff7ca5;
+}
+
+.panel {
+  border-color: #f783a01c;
+  background: linear-gradient(145deg, #21172b, #171320 72%);
+  box-shadow: 0 18px 50px #08050d55, inset 0 1px #ffffff08;
+}
+
+button,
+.button {
+  background: linear-gradient(115deg, #ff6097, #ff987c);
+  color: #1b101b;
+  box-shadow: 0 6px 22px #ff5c9728;
+}
+
+button:hover,
+.button:hover {
+  filter: brightness(1.08);
+}
+
+.button.secondary,
+.secondary-button,
+.menu-toggle {
+  background: #30243c;
+  color: #f7eaf3;
+  box-shadow: none;
+}
+
+.field input,
+.field select,
+.create-project input,
+.word-edit {
+  background: #100c17;
+  border-color: #f2a0bc2a;
+}
+
+.field input:focus,
+.field select:focus,
+.create-project input:focus {
+  border-color: #ff729d;
+  box-shadow: 0 0 0 3px #ff729d1c;
+}
+
+.drop-zone {
+  border-color: #63d8df70;
+  background: linear-gradient(145deg, #17111eaa, #131522aa);
+}
+
+.drop-zone:hover,
+.drop-zone.dragging {
+  border-color: #ff729d;
+  background: #ff729d0d;
+}
+
+.upload-icon,
+.project-icon,
+.clip-mark {
+  color: #ff7ca5;
+  background: #ff729d1c;
+}
+
+.progress-track > span {
+  background: linear-gradient(90deg, #ff6097, #62d8de);
+}
+
+.check-field input,
+.batch-clip-select input,
+.weight-control input {
+  accent-color: #ff729d;
+}
+
+.status-recording,
+.status-accepted,
+.status-created,
+.suggestion-created,
+.live-presets .selected {
+  color: #ff8fb0;
+  border-color: #ff729d80;
+  background-color: #ff729d1a;
+}
+
+.region-gameplay {
+  border-color: #61d8de;
+  background: #61d8de1a;
+}
+
+.region-facecam {
+  border-color: #ff729d;
+  background: #ff729d22;
+}
+
+.split-preview-tile + .split-preview-tile {
+  border-top-color: #ff729d;
+}
+
+.timeline-segment.selected,
+.region-mode-buttons .active {
+  border-color: #ff729d;
+  color: #ff8fb0;
+}
+
+.signal-badges span,
+.transcript-token.active-token {
+  background: #ff729d20;
+}
+
+.suggestion-heading > strong,
+.weight-control strong,
+.active-token .word-text,
+.word-time:hover,
+.word-text:hover,
+.hotkey-panel code {
+  color: #ff8fb0;
+}
+
+.caption-preview-wrap {
+  border-color: #ff729d2a;
+  background: linear-gradient(160deg, #332037, #14101c 68%);
+}
+
+.footer {
+  border-top-color: #ff6b9b26;
+}
+
+:focus-visible {
+  outline-color: #ff8fb0;
+}
+
+@media (max-width: 760px) {
+  .hero {
+    min-height: 260px;
+    padding: 38px 0 44px;
+  }
+
+  .hero::before {
+    width: 220px;
+    right: -42px;
+    opacity: .42;
+  }
+}

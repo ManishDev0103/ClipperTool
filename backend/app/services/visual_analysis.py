@@ -1,12 +1,13 @@
 import logging
-from pathlib import Path
 from typing import Any, Callable
+
+from app.services.media_source import MediaSource, is_remote_media_source
 
 LOGGER = logging.getLogger("clipper.visual-analysis")
 
 
 def analyze_visuals(
-    video: Path,
+    video: MediaSource,
     duration: float,
     progress: Callable[[float, str], None],
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -48,13 +49,25 @@ def analyze_visuals(
         if not capture.isOpened():
             raise RuntimeError("OpenCV could not open the video.")
         sample_interval = 1.0
+        is_remote = is_remote_media_source(video)
+        frame_rate = max(1.0, float(capture.get(cv2.CAP_PROP_FPS) or 30.0))
         samples: list[tuple[float, float]] = []
         previous_frame = None
         timestamp = 0.0
+        frame_index = -1
         try:
             while timestamp < duration:
-                capture.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
-                ok, frame = capture.read()
+                if is_remote:
+                    target_frame = round(timestamp * frame_rate)
+                    ok = True
+                    while frame_index < target_frame:
+                        ok, frame = capture.read()
+                        frame_index += 1
+                        if not ok:
+                            break
+                else:
+                    capture.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
+                    ok, frame = capture.read()
                 if not ok:
                     break
                 resized = cv2.resize(frame, (320, 180), interpolation=cv2.INTER_AREA)

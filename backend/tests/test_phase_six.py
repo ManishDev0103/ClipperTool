@@ -1,10 +1,15 @@
+import asyncio
 import json
+import sys
+from email.message import Message
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 import app.config as config
 import app.db as db
@@ -13,6 +18,8 @@ import app.routes.projects as project_routes
 import app.routes.settings as settings_routes
 import app.routes.transcriptions as transcription_routes
 import app.routes.uploads as uploads_routes
+import app.routes.videos as videos_routes
+import app.services.downloader as downloader
 import app.services.worker as worker
 from app.schemas import SettingsUpdate, TranscriptionCreate
 
@@ -46,8 +53,6 @@ def test_download_automatically_queues_highlight_analysis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     job_id = str(uuid4())
-    source = phase_six_data / "source.webm"
-    source.write_bytes(b"video")
     with db.connect() as connection:
         connection.execute(
             "INSERT INTO jobs (id, project_id, kind, status, payload) "
@@ -56,13 +61,15 @@ def test_download_automatically_queues_highlight_analysis(
         )
     monkeypatch.setattr(
         worker,
-        "download_video",
-        lambda *_args: (source, {"title": "Downloaded video"}),
-    )
-    monkeypatch.setattr(
-        worker,
-        "probe_media",
-        lambda _path: {"duration": 120, "width": 1920, "height": 1080, "fps": 30},
+        "resolve_video_stream",
+        lambda *_args: {
+            "url": "https://cdn.example/video",
+            "title": "Streamed video",
+            "duration": 120,
+            "width": 1920,
+            "height": 1080,
+            "fps": 30,
+        },
     )
 
     worker._process_download(
@@ -71,14 +78,194 @@ def test_download_automatically_queues_highlight_analysis(
     )
 
     with db.connect() as connection:
-        video = connection.execute("SELECT id FROM videos WHERE project_id = 'project'").fetchone()
+        video = connection.execute(
+            "SELECT id, source_url, file_path, stream_quality FROM videos WHERE project_id = 'project'"
+        ).fetchone()
         analysis_job = connection.execute(
             "SELECT payload FROM jobs WHERE kind = 'highlight_analysis' AND project_id = 'project'"
         ).fetchone()
+        queued_kinds = [
+            row["kind"]
+            for row in connection.execute(
+                "SELECT kind FROM jobs WHERE project_id = 'project' ORDER BY rowid"
+            )
+        ]
     payload = json.loads(analysis_job["payload"])
+    assert queued_kinds == ["download", "transcription", "highlight_analysis"]
     assert payload["video_id"] == video["id"]
     assert payload["auto_create_clips"] is True
     assert payload["settings"]["number_of_clips"] == 8
+    assert video["source_url"] == "https://youtube.com/watch?v=test"
+    assert video["file_path"] == ""
+    assert video["stream_quality"] == "best"
+    assert not any(path.is_file() for path in (phase_six_data / "videos").rglob("*"))
+
+
+def test_stream_resolution_does_not_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            calls["options"] = options
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool) -> dict[str, object]:
+            calls["url"] = url
+            calls["download"] = download
+            return {
+                "url": "https://cdn.example/video",
+                "title": "Streamed video",
+                "duration": 120,
+                "acodec": "aac",
+                "vcodec": "h264",
+            }
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+
+    info = downloader.resolve_video_stream("https://youtube.com/watch?v=test", "best", "")
+
+    options = calls["options"]
+    assert calls["download"] is False
+    assert info["title"] == "Streamed video"
+    assert "outtmpl" not in options
+
+
+def test_split_streams_are_muxed_without_a_local_source_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeYoutubeDL:
+        def __init__(self, _options: dict[str, object]) -> None:
+            pass
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def extract_info(self, _url: str, download: bool) -> dict[str, object]:
+            assert download is False
+            return {
+                "title": "Split-stream video",
+                "duration": 120,
+                "requested_formats": [
+                    {
+                        "url": "https://cdn.example/video",
+                        "vcodec": "vp9",
+                        "acodec": "none",
+                        "http_headers": {"User-Agent": "test"},
+                    },
+                    {
+                        "url": "https://cdn.example/audio",
+                        "vcodec": "none",
+                        "acodec": "opus",
+                        "http_headers": {"User-Agent": "test"},
+                    },
+                ],
+            }
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+
+    info = downloader.resolve_video_stream("https://youtube.com/watch?v=test", "best", "")
+    command, content_type = videos_routes._mux_command(info, 0)
+
+    assert content_type == "video/webm"
+    assert command.count("-i") == 2
+    assert command[-2:] == ["webm", "pipe:1"]
+    assert "https://cdn.example/video" in command
+    assert "https://cdn.example/audio" in command
+
+
+def test_existing_video_table_migrates_stream_quality(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "clipper.sqlite3")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            CREATE TABLE videos (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                source_url TEXT,
+                file_path TEXT NOT NULL,
+                duration REAL NOT NULL,
+                width INTEGER,
+                height INTEGER,
+                fps REAL
+            )
+            """
+        )
+
+    db.initialize_db()
+
+    with db.connect() as connection:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(videos)")}
+    assert "stream_quality" in columns
+
+
+def test_video_file_proxies_remote_range_without_storing_source(
+    phase_six_data: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with db.connect() as connection:
+        connection.execute(
+            "INSERT INTO videos (id, project_id, title, source_url, file_path, duration) "
+            "VALUES ('streamed', 'project', 'Streamed', 'https://youtube.com/watch?v=test', '', 60)"
+        )
+
+    class FakeUpstream:
+        status = 206
+
+        def __init__(self) -> None:
+            self.headers = Message()
+            self.headers["Content-Type"] = "video/mp4"
+            self.headers["Content-Length"] = "4"
+            self.headers["Content-Range"] = "bytes 2-5/10"
+            self._body = b"cdef"
+            self.closed = False
+
+        def read(self, size: int) -> bytes:
+            chunk, self._body = self._body[:size], self._body[size:]
+            return chunk
+
+        def close(self) -> None:
+            self.closed = True
+
+    upstream = FakeUpstream()
+    monkeypatch.setattr(
+        videos_routes,
+        "resolve_video_stream",
+        lambda *_args: {"url": "https://cdn.example/video", "http_headers": {"User-Agent": "test"}},
+    )
+    captured_request: list[object] = []
+
+    def open_upstream(request: object, timeout: int) -> FakeUpstream:
+        captured_request.append(request)
+        assert timeout == 30
+        return upstream
+
+    monkeypatch.setattr(videos_routes.urllib.request, "urlopen", open_upstream)
+    request = Request({"type": "http", "headers": [(b"range", b"bytes=2-5")]})
+
+    response = videos_routes.video_file("streamed", request, start_time=0)
+
+    async def read_body() -> bytes:
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    assert response.status_code == 206
+    assert response.headers["content-range"] == "bytes 2-5/10"
+    assert captured_request[0].get_header("Range") == "bytes=2-5"
+    assert asyncio.run(read_body()) == b"cdef"
+    assert upstream.closed
+    assert not any(path.is_file() for path in (phase_six_data / "videos").rglob("*"))
 
 
 def test_completed_upload_automatically_queues_highlight_analysis(
@@ -107,13 +294,22 @@ def test_completed_upload_automatically_queues_highlight_analysis(
         analysis_job = connection.execute(
             "SELECT payload FROM jobs WHERE kind = 'highlight_analysis' AND project_id = 'project'"
         ).fetchone()
+        transcription_job = connection.execute(
+            "SELECT payload FROM jobs WHERE kind = 'transcription' AND project_id = 'project'"
+        ).fetchone()
         video = connection.execute(
             "SELECT file_path FROM videos WHERE id = ?",
             (result["video"]["id"],),
         ).fetchone()
     payload = json.loads(analysis_job["payload"])
+    transcription_payload = json.loads(transcription_job["payload"])
     assert payload["video_id"] == result["video"]["id"]
     assert payload["auto_create_clips"] is True
+    assert transcription_payload == {
+        "video_id": result["video"]["id"],
+        "model": "small",
+        "device": "auto",
+    }
     assert Path(video["file_path"]).is_file()
     assert not upload_path.exists()
 

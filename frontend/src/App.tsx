@@ -135,9 +135,9 @@ function HomePage() {
   return (
     <main className="page-shell">
       <section className="hero">
-        <p className="eyebrow">YOUR MEDIA STAYS ON THIS MACHINE</p>
+        <p className="eyebrow">VICE CITY CUTTING ROOM · LOCAL & PRIVATE</p>
         <h1>Make a moment<br /><span>worth sharing.</span></h1>
-        <p className="muted">Paste a video link or upload a file to start a local project.</p>
+        <p className="muted">Drop in a video. Local AI finds the moments worth sharing, then builds your clips.</p>
       </section>
 
       <section className="panel">
@@ -218,7 +218,7 @@ function IngestPanel({ projectId, onStarted, onUploaded }: IngestPanelProps) {
       });
       onStarted(result.job_id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not queue download.");
+      setError(reason instanceof Error ? reason.message : "Could not queue video stream.");
     } finally {
       setBusy(false);
     }
@@ -295,7 +295,7 @@ function IngestPanel({ projectId, onStarted, onUploaded }: IngestPanelProps) {
           </select>
         </label>
         <button type="submit" disabled={busy || !url.trim()}>{busy ? "Working…" : "Add link"}</button>
-        <p className="muted small">Uses yt-dlp for sites it supports. Downloads are queued locally.</p>
+        <p className="muted small">Streams supported links only when needed; the full source video is not saved.</p>
       </form>
       <label
         className={`drop-zone ${dragging ? "dragging" : ""}`}
@@ -307,7 +307,7 @@ function IngestPanel({ projectId, onStarted, onUploaded }: IngestPanelProps) {
         <span className="upload-icon">↑</span>
         <strong>{uploadProgress === null ? "Drop a video here" : `Uploading ${uploadProgress}%`}</strong>
         <span className="muted small">MP4, MKV, MOV, WEBM, AVI · up to 10 GB</span>
-        <span className="muted small">Uploaded files are analyzed locally and clipped automatically—no source-site download.</span>
+        <span className="muted small">Auto-transcribed and analyzed locally, then clipped automatically—no source-site download.</span>
         {uploadProgress !== null && <span className="progress-track"><span style={{ width: `${uploadProgress}%` }} /></span>}
       </label>
       {error && <p className="error ingest-error">{error}</p>}
@@ -2196,7 +2196,7 @@ function HighlightCard({
 function JobCard({ job }: { job: Job }) {
   const isFailed = job.status === "failed";
   const jobNames = {
-    download: "Video download",
+    download: "Video stream",
     clip: "Clip job",
     transcription: `Transcription${job.model ? ` · ${job.model}` : ""}`,
     export: "Captioned export",

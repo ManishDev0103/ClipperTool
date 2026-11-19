@@ -37,6 +37,7 @@ def initialize_db() -> None:
                 title TEXT NOT NULL,
                 source_url TEXT,
                 file_path TEXT NOT NULL,
+                stream_quality TEXT NOT NULL DEFAULT 'best',
                 duration REAL NOT NULL,
                 width INTEGER,
                 height INTEGER,
@@ -197,6 +198,11 @@ def initialize_db() -> None:
         if "auto_clip_seconds" not in live_recording_columns:
             connection.execute(
                 "ALTER TABLE live_recordings ADD COLUMN auto_clip_seconds INTEGER NOT NULL DEFAULT 60"
+            )
+        video_columns = {row["name"] for row in connection.execute("PRAGMA table_info(videos)")}
+        if "stream_quality" not in video_columns:
+            connection.execute(
+                "ALTER TABLE videos ADD COLUMN stream_quality TEXT NOT NULL DEFAULT 'best'"
             )
 
 

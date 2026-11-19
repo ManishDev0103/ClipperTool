@@ -24,6 +24,16 @@ def queue_auto_highlight_analysis(
     project_id: str,
     video_id: str,
 ) -> str:
+    connection.execute(
+        "INSERT INTO jobs (id, project_id, kind, status, message, payload) "
+        "VALUES (?, ?, 'transcription', 'queued', "
+        "'Automatically transcribing video for highlight analysis', ?)",
+        (
+            str(uuid4()),
+            project_id,
+            json.dumps({"video_id": video_id, "model": "small", "device": "auto"}),
+        ),
+    )
     job_id = str(uuid4())
     connection.execute(
         "INSERT INTO jobs (id, project_id, kind, status, message, payload) "

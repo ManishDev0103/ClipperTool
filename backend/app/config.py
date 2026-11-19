@@ -9,6 +9,10 @@ FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
 YT_DLP_COOKIES_FILE = os.getenv("YT_DLP_COOKIES_FILE", "").strip()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b").strip()
+DEFAULT_MEDIA_PROXY_BASE_URL = (
+    "http://backend:8000" if Path("/.dockerenv").is_file() else "http://127.0.0.1:8000"
+)
+MEDIA_PROXY_BASE_URL = os.getenv("MEDIA_PROXY_BASE_URL", DEFAULT_MEDIA_PROXY_BASE_URL).rstrip("/")
 RUN_WORKER = os.getenv("RUN_WORKER", "true").lower() not in {"0", "false", "no"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
 MAX_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024

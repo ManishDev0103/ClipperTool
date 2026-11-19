@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.config import FFMPEG_BIN
+from app.services.media_source import MediaSource, is_remote_media_source
 
 
 class ClipCutError(RuntimeError):
@@ -10,7 +11,7 @@ class ClipCutError(RuntimeError):
 
 
 def cut_clip(
-    source: Path,
+    source: MediaSource,
     start_time: float,
     end_time: float,
     output: Path,
@@ -18,7 +19,7 @@ def cut_clip(
     progress_callback: Callable[[float], None] | None = None,
     ffmpeg_bin: str = FFMPEG_BIN,
 ) -> None:
-    if not source.is_file():
+    if not is_remote_media_source(source) and not Path(source).is_file():
         raise ClipCutError(f"Video file does not exist: {source}")
     if start_time < 0:
         raise ClipCutError("Start time must be zero or greater.")

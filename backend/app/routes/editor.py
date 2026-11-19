@@ -10,6 +10,7 @@ from app.db import connect
 from app.schemas import LayoutPresetCreate
 from app.services.reframing import ReframeError, detect_face_track
 from app.services.waveform import WaveformError, load_or_create_waveform
+from app.services.media_source import is_remote_media_source, video_source
 
 router = APIRouter(prefix="/api", tags=["timeline-editor"])
 
@@ -18,13 +19,13 @@ router = APIRouter(prefix="/api", tags=["timeline-editor"])
 def get_waveform(video_id: str) -> dict:
     with connect() as connection:
         video = connection.execute(
-            "SELECT file_path, duration FROM videos WHERE id = ?",
+            "SELECT id, file_path, source_url, stream_quality, duration FROM videos WHERE id = ?",
             (video_id,),
         ).fetchone()
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found.")
-    source = Path(video["file_path"])
     try:
+        source = video_source(video)
         peaks = load_or_create_waveform(
             source,
             float(video["duration"]),
@@ -43,7 +44,7 @@ def get_reframe_track(
 ) -> dict:
     with connect() as connection:
         video = connection.execute(
-            "SELECT file_path, duration FROM videos WHERE id = ?",
+            "SELECT id, file_path, source_url, stream_quality, duration FROM videos WHERE id = ?",
             (video_id,),
         ).fetchone()
     if video is None:
@@ -54,10 +55,11 @@ def get_reframe_track(
             detail=f"Choose a valid timeline range within the video ({video['duration']:.2f} seconds).",
         )
     try:
+        source = video_source(video, start_time)
         track = detect_face_track(
-            Path(video["file_path"]),
+            source,
             end_time - start_time,
-            start_offset=start_time,
+            start_offset=0 if is_remote_media_source(source) else start_time,
         )
     except (OSError, ReframeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"Smart reframe preview failed: {exc}") from exc

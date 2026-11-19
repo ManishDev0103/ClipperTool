@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.config import FFMPEG_BIN
+from app.services.media_source import MediaSource, is_remote_media_source, media_source_at
 from app.services.audio_analysis import analyze_audio
 from app.services.highlights import (
     DEFAULT_WEIGHTS,
@@ -18,7 +19,7 @@ LOGGER = logging.getLogger("clipper.highlights")
 
 
 def analyze_video_highlights(
-    video_path: Path,
+    video_path: MediaSource,
     duration: float,
     words: list[dict[str, Any]],
     settings: dict[str, Any],
@@ -98,8 +99,11 @@ def analyze_video_highlights(
     }
 
 
-def create_thumbnail(video_path: Path, output_path: Path, timestamp: float) -> None:
+def create_thumbnail(video_path: MediaSource, output_path: Path, timestamp: float) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if is_remote_media_source(video_path):
+        video_path = media_source_at(video_path, timestamp)
+        timestamp = 0
     command = [
         FFMPEG_BIN,
         "-y",

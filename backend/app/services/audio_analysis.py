@@ -1,17 +1,17 @@
 import logging
 import math
 import subprocess
-from pathlib import Path
 from typing import Any, Callable
 
 from app.config import FFPROBE_BIN, FFMPEG_BIN
+from app.services.media_source import MediaSource
 
 LOGGER = logging.getLogger("clipper.audio-analysis")
 SAMPLE_RATE = 16000
 
 
 def analyze_audio(
-    video: Path,
+    video: MediaSource,
     duration: float,
     progress: Callable[[float, str], None],
     gaming_mode: bool = False,

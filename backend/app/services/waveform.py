@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.config import FFMPEG_BIN
+from app.services.media_source import MediaSource, is_remote_media_source
 
 SAMPLE_RATE = 1000
 MAX_PEAKS = 12000
@@ -17,8 +18,8 @@ class WaveformError(RuntimeError):
     """Raised when an audio waveform cannot be generated."""
 
 
-def build_waveform_peaks(source: Path, duration: float) -> list[float]:
-    if not source.is_file():
+def build_waveform_peaks(source: MediaSource, duration: float) -> list[float]:
+    if not is_remote_media_source(source) and not Path(source).is_file():
         raise WaveformError("The source video is missing from local storage.")
     if duration <= 0:
         raise WaveformError("A positive video duration is required to build its waveform.")
@@ -80,12 +81,17 @@ def build_waveform_peaks(source: Path, duration: float) -> list[float]:
 
 
 def load_or_create_waveform(
-    source: Path,
+    source: MediaSource,
     duration: float,
     cache_path: Path,
 ) -> list[float]:
-    stat = source.stat()
-    fingerprint = {"size": stat.st_size, "modified": stat.st_mtime_ns}
+    if isinstance(source, Path):
+        stat = source.stat()
+        fingerprint = {"size": stat.st_size, "modified": stat.st_mtime_ns}
+    elif is_remote_media_source(source):
+        fingerprint = {"url": source}
+    else:
+        raise WaveformError("The waveform source must be a local file or HTTP stream.")
     try:
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
         if cached.get("source") == fingerprint and cached.get("duration") == duration:

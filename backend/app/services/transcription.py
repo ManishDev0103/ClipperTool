@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.config import DATA_DIR, FFMPEG_BIN
+from app.services.media_source import MediaSource, is_remote_media_source, media_source_at
 
 LOGGER = logging.getLogger("clipper.transcription")
 CHUNK_SECONDS = 600
@@ -23,28 +24,43 @@ def _gpu_error(error: Exception) -> bool:
     )
 
 
-def _extract_chunk(video: Path, start: float, duration: float, output: Path) -> None:
-    command = [
-        FFMPEG_BIN,
-        "-y",
-        "-nostdin",
-        "-v",
-        "error",
-        "-ss",
-        str(start),
-        "-i",
-        str(video),
-        "-t",
-        str(duration),
-        "-vn",
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "-c:a",
-        "pcm_s16le",
-        str(output),
-    ]
+def _extract_chunk(video: MediaSource, start: float, duration: float, output: Path) -> None:
+    if is_remote_media_source(video):
+        command = [
+            FFMPEG_BIN,
+            "-y",
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            str(media_source_at(video, start)),
+        ]
+    else:
+        command = [
+            FFMPEG_BIN,
+            "-y",
+            "-nostdin",
+            "-v",
+            "error",
+            "-ss",
+            str(start),
+            "-i",
+            str(video),
+        ]
+    command.extend(
+        [
+            "-t",
+            str(duration),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            str(output),
+        ]
+    )
     try:
         subprocess.run(command, capture_output=True, text=True, check=True)
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -53,7 +69,7 @@ def _extract_chunk(video: Path, start: float, duration: float, output: Path) -> 
 
 
 def _transcribe_chunks(
-    video: Path,
+    video: MediaSource,
     duration: float,
     model_size: str,
     device: str,
@@ -126,7 +142,7 @@ def _transcribe_chunks(
 
 
 def transcribe_video(
-    video: Path,
+    video: MediaSource,
     duration: float,
     model_size: str,
     device: str,
@@ -136,7 +152,7 @@ def transcribe_video(
         raise TranscriptionError(f"Unsupported Whisper model: {model_size}")
     if device not in {"auto", "cpu"}:
         raise TranscriptionError("Transcription device must be 'auto' or 'cpu'.")
-    if not video.is_file():
+    if not is_remote_media_source(video) and not Path(video).is_file():
         raise TranscriptionError(f"Video file does not exist: {video}")
     if duration <= 0:
         raise TranscriptionError("Video duration must be greater than zero.")
